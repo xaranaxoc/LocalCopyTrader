@@ -437,23 +437,137 @@ class SlaveDialog(tk.Toplevel):
         self.destroy()
 
 
-class AccountRow(tk.Frame):
-    def __init__(self, parent, slave_data: Dict, on_edit, on_delete, on_toggle):
-        super().__init__(parent, bg=BG_ROW)
+class AccountRow:
+    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle):
+        self._parent = parent
+        self._row = row_index
         self.slave_data = slave_data
         self._on_edit = on_edit
         self._on_delete = on_delete
         self._on_toggle = on_toggle
         self._hover = False
+        self._leave_timer = None
+        self._widgets = []
         self._build()
-        self.bind("<Enter>", lambda e: self._set_hover(True))
-        self.bind("<Leave>", lambda e: self._set_hover(False))
+
+    @property
+    def row_index(self):
+        return self._row
+
+    @row_index.setter
+    def row_index(self, value):
+        self._row = value
+        if hasattr(self, '_bg_frame') and self._bg_frame:
+            self._bg_frame.grid(row=value)
+        for w in self._widgets:
+            w.grid(row=value)
+
+    def _cur_bg(self):
+        return BG_ROW_HOVER if self._hover else BG_ROW
+
+    def _build(self):
+        d = self.slave_data
+        bg = BG_ROW
+        r = self._row
+
+        self._bg_frame = tk.Frame(self._parent, bg=bg)
+        self._bg_frame.grid(row=r, column=0, columnspan=11, sticky="nsew", pady=1)
+        self._bg_frame.lower()
+
+        enabled = d.get("enabled", True)
+        self.var_enabled = tk.BooleanVar(value=enabled)
+        self.lbl_check = tk.Label(self._parent, text="\u2611" if enabled else "\u2610",
+                                   bg=bg, fg=GREEN if enabled else FG_DIM,
+                                   font=FONT_BOLD, cursor="hand2")
+        self.lbl_check.grid(row=r, column=0, padx=(8, 2), sticky="ew")
+        self.lbl_check.bind("<Button-1>", lambda e: self._toggle())
+        self._widgets.append(self.lbl_check)
+
+        self.lbl_dot = tk.Label(self._parent, text="\u25CF", bg=bg, fg=FG_DIM, font=FONT)
+        self.lbl_dot.grid(row=r, column=1, padx=2, sticky="w")
+        self._widgets.append(self.lbl_dot)
+
+        self.lbl_name = tk.Label(self._parent, text=d.get("name", "\u2014"), bg=bg, fg=FG,
+                                  font=FONT_BOLD, anchor="w")
+        self.lbl_name.grid(row=r, column=2, padx=(4, 4), sticky="ew")
+        self._widgets.append(self.lbl_name)
+
+        self.lbl_login = tk.Label(self._parent, text="\u2014", bg=bg, fg=FG_DIM,
+                                   font=FONT_MONO_SM, anchor="w")
+        self.lbl_login.grid(row=r, column=3, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_login)
+
+        self.lbl_balance = tk.Label(self._parent, text="\u2014", bg=bg, fg=FG,
+                                     font=FONT_VAL_BOLD, anchor="e")
+        self.lbl_balance.grid(row=r, column=4, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_balance)
+
+        self.lbl_equity = tk.Label(self._parent, text="\u2014", bg=bg, fg=FG_DIM,
+                                    font=FONT_MONO_SM, anchor="e")
+        self.lbl_equity.grid(row=r, column=5, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_equity)
+
+        self.lbl_pnl = tk.Label(self._parent, text="\u2014", bg=bg, fg=FG_DIM,
+                                 font=FONT_VAL, anchor="e")
+        self.lbl_pnl.grid(row=r, column=6, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_pnl)
+
+        self.lbl_positions = tk.Label(self._parent, text="", bg=bg, fg=ACCENT,
+                                       font=FONT_SM, anchor="center")
+        self.lbl_positions.grid(row=r, column=7, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_positions)
+
+        sym_map = d.get("symbol_map", {})
+        sym_text = "  ".join(f"{k}\u2192{v}" for k, v in list(sym_map.items())[:3])
+        if len(sym_map) > 3:
+            sym_text += f" +{len(sym_map) - 3}"
+        self.lbl_symbols = tk.Label(self._parent, text=sym_text or "\u2014", bg=bg, fg=FG_DIM,
+                                     font=FONT_XS, anchor="w")
+        self.lbl_symbols.grid(row=r, column=8, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_symbols)
+
+        rt = d.get("risk_type", "percent")
+        rv = d.get("risk_value", 1.0)
+        risk_text = f"{rv}{'%' if rt == 'percent' else '$'}"
+        self.lbl_risk = tk.Label(self._parent, text=risk_text, bg=bg, fg=YELLOW,
+                                  font=FONT_SM, anchor="e")
+        self.lbl_risk.grid(row=r, column=9, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_risk)
+
+        bf = tk.Frame(self._parent, bg=bg)
+        bf.grid(row=r, column=10, padx=(2, 6), sticky="e")
+        tk.Button(bf, text="\u270E", command=self._edit,
+                  bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
+                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
+        tk.Button(bf, text="\u2715", command=self._delete,
+                  bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=RED,
+                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
+        self._widgets.append(bf)
+
+        for w in self._widgets:
+            w.bind("<Enter>", self._on_enter)
+            w.bind("<Leave>", self._on_leave)
+
+    def _on_enter(self, event=None):
+        if self._leave_timer:
+            self._leave_timer = None
+        self._set_hover(True)
+
+    def _on_leave(self, event=None):
+        self._leave_timer = self._parent.after(50, self._do_leave)
+
+    def _do_leave(self):
+        self._leave_timer = None
+        self._set_hover(False)
 
     def _set_hover(self, hover: bool):
         self._hover = hover
-        bg = BG_ROW_HOVER if hover else BG_ROW
-        self.configure(bg=bg)
-        for w in self.winfo_children():
+        bg = self._cur_bg()
+        if hasattr(self, '_bg_frame') and self._bg_frame:
+            self._bg_frame.configure(bg=bg)
+        for w in self._widgets:
             self._recolor(w, bg)
 
     def _recolor(self, w, bg):
@@ -469,88 +583,9 @@ class AccountRow(tk.Frame):
         except Exception:
             pass
 
-    def _build(self):
-        d = self.slave_data
-        bg = BG_ROW
-
-        # 0: ON/OFF
-        enabled = d.get("enabled", True)
-        self.var_enabled = tk.BooleanVar(value=enabled)
-        self.lbl_check = tk.Label(self, text="\u2611" if enabled else "\u2610",
-                                   bg=bg, fg=GREEN if enabled else FG_DIM,
-                                   font=FONT_BOLD, cursor="hand2")
-        self.lbl_check.grid(row=0, column=0, padx=(8, 2), sticky="ew")
-        self.lbl_check.bind("<Button-1>", lambda e: self._toggle())
-
-        # 1: dot
-        self.lbl_dot = tk.Label(self, text="\u25CF", bg=bg, fg=FG_DIM, font=FONT)
-        self.lbl_dot.grid(row=0, column=1, padx=2, sticky="w")
-
-        # 2: name
-        self.lbl_name = tk.Label(self, text=d.get("name", "\u2014"), bg=bg, fg=FG,
-                                  font=FONT_BOLD, anchor="w")
-        self.lbl_name.grid(row=0, column=2, padx=(4, 4), sticky="ew")
-
-        # 3: login
-        self.lbl_login = tk.Label(self, text="\u2014", bg=bg, fg=FG_DIM,
-                                   font=FONT_MONO_SM, anchor="w")
-        self.lbl_login.grid(row=0, column=3, padx=4, sticky="ew")
-
-        # 4: balance
-        self.lbl_balance = tk.Label(self, text="\u2014", bg=bg, fg=FG,
-                                     font=FONT_VAL_BOLD, anchor="e")
-        self.lbl_balance.grid(row=0, column=4, padx=4, sticky="ew")
-
-        # 5: equity
-        self.lbl_equity = tk.Label(self, text="\u2014", bg=bg, fg=FG_DIM,
-                                    font=FONT_MONO_SM, anchor="e")
-        self.lbl_equity.grid(row=0, column=5, padx=4, sticky="ew")
-
-        # 6: P&L
-        self.lbl_pnl = tk.Label(self, text="\u2014", bg=bg, fg=FG_DIM,
-                                 font=FONT_VAL, anchor="e")
-        self.lbl_pnl.grid(row=0, column=6, padx=4, sticky="ew")
-
-        # 7: positions
-        self.lbl_positions = tk.Label(self, text="", bg=bg, fg=ACCENT,
-                                       font=FONT_SM, anchor="center")
-        self.lbl_positions.grid(row=0, column=7, padx=4, sticky="ew")
-
-        # 8: symbols (expandable)
-        sym_map = d.get("symbol_map", {})
-        sym_text = "  ".join(f"{k}\u2192{v}" for k, v in list(sym_map.items())[:3])
-        if len(sym_map) > 3:
-            sym_text += f" +{len(sym_map) - 3}"
-        self.lbl_symbols = tk.Label(self, text=sym_text or "\u2014", bg=bg, fg=FG_DIM,
-                                     font=FONT_XS, anchor="w")
-        self.lbl_symbols.grid(row=0, column=8, padx=4, sticky="ew")
-
-        # 9: risk
-        rt = d.get("risk_type", "percent")
-        rv = d.get("risk_value", 1.0)
-        risk_text = f"{rv}{'%' if rt == 'percent' else '$'}"
-        self.lbl_risk = tk.Label(self, text=risk_text, bg=bg, fg=YELLOW,
-                                  font=FONT_SM, anchor="e")
-        self.lbl_risk.grid(row=0, column=9, padx=4, sticky="ew")
-
-        # 10: buttons
-        bf = tk.Frame(self, bg=bg)
-        bf.grid(row=0, column=10, padx=(2, 6), sticky="e")
-        tk.Button(bf, text="\u270E", command=self._edit,
-                  bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
-                  activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-        tk.Button(bf, text="\u2715", command=self._delete,
-                  bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
-                  activebackground=BG_ROW_HOVER, activeforeground=RED,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-
-        for idx, _, min_w, weight, _ in COL_SPEC:
-            self.columnconfigure(idx, minsize=min_w, weight=weight)
-
     def update_info(self, balance: float, equity: float, login: int = 0,
                     positions: int = 0, status: str = ""):
-        bg = BG_ROW_HOVER if self._hover else BG_ROW
+        bg = self._cur_bg()
         self.lbl_balance.config(text=f"${balance:,.2f}", bg=bg)
         self.lbl_equity.config(text=f"${equity:,.2f}", bg=bg)
         if login:
@@ -568,15 +603,23 @@ class AccountRow(tk.Frame):
             dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
             self.lbl_dot.config(fg=dot_color, bg=bg)
 
-    def update_status_only(self, status: str):
-        bg = BG_ROW_HOVER if self._hover else BG_ROW
+    def update_status_only(self, status: str, balance: float = 0, equity: float = 0):
+        bg = self._cur_bg()
         dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
         self.lbl_dot.config(fg=dot_color, bg=bg)
+        if balance > 0:
+            self.lbl_balance.config(text=f"${balance:,.2f}", bg=bg)
+        if equity > 0:
+            self.lbl_equity.config(text=f"${equity:,.2f}", bg=bg)
+            pnl = equity - balance
+            pnl_color = GREEN if pnl >= 0 else RED
+            pnl_sign = "+" if pnl >= 0 else ""
+            self.lbl_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color, bg=bg)
 
     def _toggle(self):
         new_val = not self.var_enabled.get()
         self.var_enabled.set(new_val)
-        bg = BG_ROW_HOVER if self._hover else BG_ROW
+        bg = self._cur_bg()
         self.lbl_check.config(text="\u2611" if new_val else "\u2610",
                                fg=GREEN if new_val else FG_DIM, bg=bg)
         self.slave_data["enabled"] = new_val
@@ -591,10 +634,28 @@ class AccountRow(tk.Frame):
         if self._on_delete:
             self._on_delete(self.slave_data, self)
 
+    def destroy(self):
+        if self._leave_timer:
+            try:
+                self._parent.after_cancel(self._leave_timer)
+            except Exception:
+                pass
+            self._leave_timer = None
+        for w in self._widgets:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._widgets.clear()
+        if hasattr(self, '_bg_frame') and self._bg_frame:
+            try:
+                self._bg_frame.destroy()
+            except Exception:
+                pass
+
     def refresh(self, data: Dict):
         self.slave_data = data
-        for w in self.winfo_children():
-            w.destroy()
+        self.destroy()
         self._build()
 
 
@@ -739,36 +800,19 @@ class App(tk.Tk):
 
         master_f.columnconfigure(2, weight=1)
 
-        # ── Заголовки колонок ──────────────────────────────────
-        col_hdr = tk.Frame(self, bg=BG)
-        col_hdr.pack(fill="x", padx=14, pady=(4, 0))
+        # ── Таблица аккаунтов ────────────────────────────────────
+        self._table_frame = tk.Frame(self, bg=BG)
+        self._table_frame.pack(fill="both", expand=True, padx=14, pady=2)
 
-        for idx, text, min_w, weight, anchor in COL_SPEC:
-            lbl = tk.Label(col_hdr, text=text, bg=BG, fg=FG_DIM, font=FONT_XS, anchor=anchor)
-            lbl.grid(row=0, column=idx, padx=2, sticky="ew")
-            col_hdr.columnconfigure(idx, minsize=min_w, weight=weight)
+        for idx, _, min_w, weight, _ in COL_SPEC:
+            self._table_frame.columnconfigure(idx, minsize=min_w, weight=weight)
 
-        self._make_btn(col_hdr, "+ Аккаунт", self._add_slave, accent=True).grid(row=0, column=10, sticky="e")
-
-        # ── Список слейвов ────────────────────────────────────
-        list_outer = tk.Frame(self, bg=BG)
-        list_outer.pack(fill="both", expand=True, padx=14, pady=2)
-
-        list_canvas = tk.Canvas(list_outer, bg=BG, highlightthickness=0)
-        list_sb = ttk.Scrollbar(list_outer, orient="vertical", command=list_canvas.yview)
-        self.slaves_list = tk.Frame(list_canvas, bg=BG)
-
-        self.slaves_list.bind("<Configure>",
-                              lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
-        list_canvas.create_window((0, 0), window=self.slaves_list, anchor="nw")
-        list_canvas.configure(yscrollcommand=list_sb.set)
-        list_sb.pack(side="right", fill="y")
-        list_canvas.pack(side="left", fill="both", expand=True)
-
-        def _on_wheel(event):
-            list_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        list_canvas.bind("<Enter>", lambda e: list_canvas.bind_all("<MouseWheel>", _on_wheel))
-        list_canvas.bind("<Leave>", lambda e: list_canvas.unbind_all("<MouseWheel>"))
+        for idx, text, _, _, anchor in COL_SPEC:
+            tk.Label(self._table_frame, text=text, bg=BG, fg=FG_DIM,
+                     font=FONT_XS, anchor=anchor).grid(row=0, column=idx, padx=2, pady=(2, 0), sticky="ew")
+        self._make_btn(self._table_frame, "+ Аккаунт", self._add_slave,
+                       accent=True).grid(row=0, column=10, sticky="e", padx=2, pady=(2, 0))
+        self._next_row = 1
 
         # Статистика
         stats_f = tk.Frame(self, bg=BG)
@@ -836,12 +880,12 @@ class App(tk.Tk):
             self._save_config()
 
     def _add_slave_row(self, data: Dict):
-        row = AccountRow(self.slaves_list, data,
+        row = AccountRow(self._table_frame, self._next_row, data,
                          on_edit=self._edit_slave,
                          on_delete=self._delete_slave,
                          on_toggle=self._toggle_slave)
-        row.pack(fill="x", pady=1)
         self._rows.append(row)
+        self._next_row += 1
 
     def _edit_slave(self, data: Dict, row: AccountRow):
         dlg = SlaveDialog(self, data)
@@ -859,9 +903,16 @@ class App(tk.Tk):
     def _delete_slave(self, data: Dict, row: AccountRow):
         if messagebox.askyesno("Удалить", f"Удалить \u00AB{data.get('name', '?')}\u00BB?", parent=self):
             self._slaves.remove(data)
-            self._rows.remove(row)
-            row.destroy()
+            self._rebuild_rows()
             self._save_config()
+
+    def _rebuild_rows(self):
+        for r in self._rows:
+            r.destroy()
+        self._rows.clear()
+        self._next_row = 1
+        for s in self._slaves:
+            self._add_slave_row(s)
 
     def _toggle_slave(self, data: Dict):
         self._save_config()
@@ -1030,8 +1081,9 @@ class App(tk.Tk):
     def _on_log(self, msg: str):
         self.after(0, self._log, msg)
 
-    def _on_status(self, terminal_id: str, status: str):
-        self.after(0, self._update_status, terminal_id, status)
+    def _on_status(self, terminal_id: str, status: str,
+                   balance: float = 0, equity: float = 0):
+        self.after(0, self._update_status, terminal_id, status, balance, equity)
 
     def _on_trade(self, trade_info: Dict):
         self.after(0, self._add_trade_row, trade_info)
@@ -1052,10 +1104,24 @@ class App(tk.Tk):
             text=f"\u2705 {self._session_stats['copied']}  \u274C {self._session_stats['failed']}")
         self.notebook.select(0)
 
-    def _update_status(self, terminal_id: str, status: str):
+    def _update_status(self, terminal_id: str, status: str,
+                       balance: float = 0, equity: float = 0):
+        if terminal_id == "master":
+            if balance > 0:
+                self.lbl_master_bal.config(text=f"${balance:,.2f}")
+            if equity > 0:
+                self.lbl_master_eq.config(text=f"${equity:,.2f}")
+                pnl = equity - balance
+                pnl_color = GREEN if pnl >= 0 else RED
+                pnl_sign = "+" if pnl >= 0 else ""
+                self.lbl_master_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color)
+            return
         for row, slave in zip(self._rows, self._slaves):
             if slave.get("name") == terminal_id or slave.get("id") == terminal_id:
-                row.update_status_only(status)
+                if balance > 0 and equity > 0:
+                    row.update_status_only(status, balance, equity)
+                else:
+                    row.update_status_only(status)
                 break
 
     # ── Лог ─────────────────────────────────────────────────

@@ -214,7 +214,7 @@ class CopyTrader:
         config: Dict,
         state_file: str,
         log_callback: Callable[[str], None],
-        status_callback: Callable[[str, str], None],
+        status_callback: Callable[[str, str, float, float], None],
         trade_callback: Optional[Callable[[Dict], None]] = None,
         config_file: str = "",
     ):
@@ -257,22 +257,13 @@ class CopyTrader:
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_cb(f"[{ts}] {msg}")
 
-    def _status(self, terminal_id: str, status: str):
-        self.status_cb(terminal_id, status)
+    def _status(self, terminal_id: str, status: str,
+                balance: float = 0, equity: float = 0):
+        self.status_cb(terminal_id, status, balance, equity)
 
     def _trade_event(self, info: Dict):
         if self.trade_cb:
             self.trade_cb(info)
-
-    def _beep(self, success: bool = True):
-        try:
-            import winsound
-            if success:
-                winsound.Beep(800, 120)
-            else:
-                winsound.Beep(400, 250)
-        except Exception:
-            pass
 
     def _reload_config(self):
         if not self.config_file:
@@ -332,7 +323,8 @@ class CopyTrader:
             if acc is None:
                 self._status("master", "🔴 Нет данных аккаунта")
                 return
-            self._status("master", f"🟢 #{acc.login} ${acc.balance:.2f}")
+            self._status("master", f"🟢 #{acc.login} ${acc.balance:.2f}",
+                         acc.balance, acc.equity)
 
             ti = mt5.terminal_info()
             if ti and not ti.trade_allowed:
@@ -396,7 +388,8 @@ class CopyTrader:
                 self._log(f"⚠️ [{sname}] Включите Алготрейдинг (AutoTrading) в терминале!")
                 return
 
-            self._status(sname, f"🟢 #{acc.login} ${acc.balance:.2f}")
+            self._status(sname, f"🟢 #{acc.login} ${acc.balance:.2f}",
+                         acc.balance, acc.equity)
             balance = acc.balance
             equity = acc.equity
 
@@ -410,7 +403,6 @@ class CopyTrader:
                             f"🛑 [{sname}] Просадка {dd_pct:.1f}% >= {max_dd}% — "
                             f"копирование приостановлено"
                         )
-                        self._beep(False)
                         self._drawdown_paused[sid] = True
                     self._status(sname, f"🔴 #{acc.login} просадка {dd_pct:.1f}%")
                     return
@@ -731,7 +723,6 @@ class CopyTrader:
                 f"price={price:.5f} filling={request.get('type_filling')} "
                 f"retcode={retcode} {comment}"
             )
-            self._beep(False)
             self._trade_event({
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "slave": sname,
@@ -749,7 +740,6 @@ class CopyTrader:
             f"✅ [{sname}] {slave_symbol} {order_type_name(order_type)} "
             f"lot={lot:.2f} → #{result.order} (мастер #{master_pos.ticket})"
         )
-        self._beep(True)
         self._trade_event({
             "time": datetime.now().strftime("%H:%M:%S"),
             "slave": sname,
