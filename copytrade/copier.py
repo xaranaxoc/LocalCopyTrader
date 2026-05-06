@@ -215,18 +215,21 @@ class CopyTrader:
         state_file: str,
         log_callback: Callable[[str], None],
         status_callback: Callable[[str, str], None],
+        trade_callback: Optional[Callable[[Dict], None]] = None,
+        config_file: str = "",
     ):
         self.config = config
+        self.config_file = config_file
         self.state_file = state_file
         self.log_cb = log_callback
         self.status_cb = status_callback
+        self.trade_cb = trade_callback
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._drawdown_paused: Dict[str, bool] = {}
 
-        # state["positions"] = {str(master_ticket): {slave_id: slave_ticket}}
-        # state["orders"]    = {str(master_ticket): {slave_id: slave_ticket}}
         self.state = load_state(state_file)
 
     # ── Публичный интерфейс ──────────────────────────────────
@@ -257,6 +260,36 @@ class CopyTrader:
     def _status(self, terminal_id: str, status: str):
         self.status_cb(terminal_id, status)
 
+    def _trade_event(self, info: Dict):
+        if self.trade_cb:
+            self.trade_cb(info)
+
+    def _beep(self, success: bool = True):
+        try:
+            import winsound
+            if success:
+                winsound.Beep(800, 120)
+            else:
+                winsound.Beep(400, 250)
+        except Exception:
+            pass
+
+    def _reload_config(self):
+        if not self.config_file:
+            return
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            with self._lock:
+                old_master = self.config.get("master", {}).get("path", "")
+                self.config = cfg
+                if not self.config.get("master"):
+                    self.config["master"] = {}
+                if not self.config.get("master", {}).get("path"):
+                    self.config["master"]["path"] = old_master
+        except Exception:
+            pass
+
     # ── Основной цикл ────────────────────────────────────────
 
     def _run(self):
@@ -273,6 +306,8 @@ class CopyTrader:
             self._log("❌ Библиотека MetaTrader5 не установлена")
             self._stop_event.wait(5)
             return
+
+        self._reload_config()
 
         master_cfg = self.config.get("master", {})
         master_path = master_cfg.get("path", "")
@@ -363,6 +398,29 @@ class CopyTrader:
 
             self._status(sname, f"🟢 #{acc.login} ${acc.balance:.2f}")
             balance = acc.balance
+            equity = acc.equity
+
+            # ── Защита по просадке ────────────────────────────────
+            max_dd = slave.get("max_drawdown", 0)
+            if max_dd > 0 and balance > 0:
+                dd_pct = (balance - equity) / balance * 100
+                if dd_pct >= max_dd:
+                    if not self._drawdown_paused.get(sid):
+                        self._log(
+                            f"🛑 [{sname}] Просадка {dd_pct:.1f}% >= {max_dd}% — "
+                            f"копирование приостановлено"
+                        )
+                        self._beep(False)
+                        self._drawdown_paused[sid] = True
+                    self._status(sname, f"🔴 #{acc.login} просадка {dd_pct:.1f}%")
+                    return
+                else:
+                    if self._drawdown_paused.get(sid):
+                        self._log(
+                            f"✅ [{sname}] Просадка {dd_pct:.1f}% < {max_dd}% — "
+                            f"копирование возобновлено"
+                        )
+                        self._drawdown_paused[sid] = False
 
             self._sync_positions(slave, sid, sname, symbol_map,
                                  master_positions, balance)
@@ -433,6 +491,78 @@ class CopyTrader:
             # Если для этого мастер-тикета больше нет слейвов — удаляем запись
             if not state_pos.get(ticket_str):
                 state_pos.pop(ticket_str, None)
+
+        # ── SL/TP модификация на существующих позициях ─────────────
+        for ticket_str, master_pos in master_pos_map.items():
+            slave_ticket = state_pos.get(ticket_str, {}).get(sid)
+            if not slave_ticket:
+                continue
+            slave_positions = mt5.positions_get(ticket=slave_ticket)
+            if not slave_positions:
+                continue
+            slave_pos = slave_positions[0]
+
+            slave_symbol = symbol_map.get(master_pos.symbol, master_pos.symbol)
+            sym_info = mt5.symbol_info(slave_pos.symbol)
+            if not sym_info:
+                continue
+            digits = sym_info.digits
+
+            new_sl = 0.0
+            new_tp = 0.0
+            need_modify = False
+
+            if master_pos.sl != 0.0:
+                sl_pct = abs(master_pos.price_open - master_pos.sl) / master_pos.price_open
+                if master_pos.type == 0:  # BUY
+                    new_sl = normalize_price(slave_pos.price_open * (1 - sl_pct), digits)
+                else:
+                    new_sl = normalize_price(slave_pos.price_open * (1 + sl_pct), digits)
+                if abs(new_sl - slave_pos.sl) > sym_info.trade_tick_size:
+                    need_modify = True
+            else:
+                if slave_pos.sl != 0.0:
+                    new_sl = 0.0
+                    need_modify = True
+
+            if master_pos.tp != 0.0:
+                tp_pct = abs(master_pos.price_open - master_pos.tp) / master_pos.price_open
+                if master_pos.type == 0:  # BUY
+                    new_tp = normalize_price(slave_pos.price_open * (1 + tp_pct), digits)
+                else:
+                    new_tp = normalize_price(slave_pos.price_open * (1 - tp_pct), digits)
+                if abs(new_tp - slave_pos.tp) > sym_info.trade_tick_size:
+                    need_modify = True
+            else:
+                if slave_pos.tp != 0.0:
+                    new_tp = 0.0
+                    need_modify = True
+
+            if need_modify:
+                self._modify_position(sname, slave_pos, new_sl, new_tp, sym_info)
+
+            # ── Partial close: объём мастера уменьшился ──────────────
+            if state_pos.get(ticket_str, {}).get("_master_vol"):
+                old_vol = state_pos[ticket_str]["_master_vol"]
+                if master_pos.volume < old_vol - 0.0001:
+                    ratio = master_pos.volume / old_vol
+                    slave_vol_to_close = slave_pos.volume * (1 - ratio)
+                    vol_step = sym_info.volume_step
+                    if vol_step > 0:
+                        slave_vol_to_close = round(slave_vol_to_close / vol_step) * vol_step
+                    slave_vol_to_close = max(sym_info.volume_min, slave_vol_to_close)
+                    new_slave_vol = slave_pos.volume - slave_vol_to_close
+                    if new_slave_vol < sym_info.volume_min:
+                        slave_vol_to_close = slave_pos.volume
+                        new_slave_vol = 0.0
+                    if slave_vol_to_close >= sym_info.volume_min:
+                        self._partial_close(sname, slave_pos, slave_vol_to_close,
+                                            master_ticket_str=ticket_str)
+                        self._log(
+                            f"📝 [{sname}] Частичное закрытие #{slave_pos.ticket} "
+                            f"vol={slave_vol_to_close:.2f} (мастер {old_vol}→{master_pos.volume})"
+                        )
+            state_pos.setdefault(ticket_str, {})["_master_vol"] = master_pos.volume
 
     # ── Синхронизация ордеров ────────────────────────────────
 
@@ -543,6 +673,10 @@ class CopyTrader:
         else:
             lot = slave.get("default_lot", 0.01)
 
+        if self.config.get("min_lot_mode", False):
+            lot = sym_info.volume_min
+            self._log(f"📏 [{sname}] Мин. лот режим: lot={lot}")
+
         # Цена
         tick = mt5.symbol_info_tick(slave_symbol)
         if tick is None:
@@ -597,12 +731,36 @@ class CopyTrader:
                 f"price={price:.5f} filling={request.get('type_filling')} "
                 f"retcode={retcode} {comment}"
             )
+            self._beep(False)
+            self._trade_event({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "slave": sname,
+                "symbol": slave_symbol,
+                "direction": order_type_name(order_type),
+                "lot": lot,
+                "master_ticket": str(master_pos.ticket),
+                "slave_ticket": "—",
+                "success": False,
+                "status": f"❌ retcode={retcode} {comment}",
+            })
             return None
 
         self._log(
             f"✅ [{sname}] {slave_symbol} {order_type_name(order_type)} "
             f"lot={lot:.2f} → #{result.order} (мастер #{master_pos.ticket})"
         )
+        self._beep(True)
+        self._trade_event({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "slave": sname,
+            "symbol": slave_symbol,
+            "direction": order_type_name(order_type),
+            "lot": lot,
+            "master_ticket": str(master_pos.ticket),
+            "slave_ticket": str(result.order),
+            "success": True,
+            "status": f"✅ Открыт #{result.order}",
+        })
         return result.order
 
     # ── Закрытие позиции на слейве ───────────────────────────
@@ -652,6 +810,69 @@ class CopyTrader:
                 f"(мастер #{master_ticket_str})"
             )
 
+    # ── Модификация SL/TP на слейве ────────────────────────────
+
+    def _modify_position(self, sname: str, slave_pos, new_sl: float,
+                         new_tp: float, sym_info):
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": slave_pos.symbol,
+            "position": slave_pos.ticket,
+            "volume": slave_pos.volume,
+            "sl": new_sl,
+            "tp": new_tp,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": get_filling_mode(sym_info),
+        }
+
+        result = try_send_order(request, self._log)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            retcode = result.retcode if result else -1
+            self._log(
+                f"⚠️ [{sname}] Ошибка модификации SL/TP #{slave_pos.ticket} "
+                f"retcode={retcode}"
+            )
+        else:
+            self._log(
+                f"📝 [{sname}] SL/TP обновлены #{slave_pos.ticket} "
+                f"SL={new_sl:.{sym_info.digits}f} TP={new_tp:.{sym_info.digits}f}"
+            )
+
+    # ── Частичное закрытие позиции на слейве ──────────────────
+
+    def _partial_close(self, sname: str, slave_pos, close_volume: float,
+                       master_ticket_str: str = ""):
+        tick = mt5.symbol_info_tick(slave_pos.symbol)
+        if tick is None:
+            return
+
+        sym_info = mt5.symbol_info(slave_pos.symbol)
+        close_type = opposite_order_type(slave_pos.type)
+        price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+        if sym_info:
+            price = normalize_price(price, sym_info.digits)
+
+        filling = get_filling_mode(sym_info) if sym_info else mt5.ORDER_FILLING_IOC
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": slave_pos.symbol,
+            "volume": close_volume,
+            "type": close_type,
+            "position": slave_pos.ticket,
+            "price": price,
+            "comment": f"CT_pclose_{master_ticket_str}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling,
+        }
+
+        result = try_send_order(request, self._log)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            retcode = result.retcode if result else -1
+            self._log(f"❌ [{sname}] Ошибка частичного закрытия #{slave_pos.ticket} retcode={retcode}")
+        else:
+            self._log(f"✅ [{sname}] Частичное закрытие #{slave_pos.ticket} vol={close_volume:.2f}")
+
     # ── Размещение отложенного ордера на слейве ──────────────
 
     def _place_order(self, slave, sid, sname, symbol_map,
@@ -692,6 +913,9 @@ class CopyTrader:
                 lot = slave.get("default_lot", 0.01)
         else:
             lot = slave.get("default_lot", 0.01)
+
+        if self.config.get("min_lot_mode", False):
+            lot = sym_info.volume_min
 
         digits = sym_info.digits
         order_price = normalize_price(master_order.price_open, digits)
