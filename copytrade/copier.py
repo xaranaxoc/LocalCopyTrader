@@ -384,10 +384,24 @@ class CopyTrader:
                 self._log(
                     f"❌ [{sname}] Тест FAILED: retcode={retcode} {comment}"
                 )
+                self._trade_event({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "slave": sname, "symbol": slave_sym,
+                    "direction": "BUY", "lot": lot,
+                    "master_ticket": "TEST", "slave_ticket": "—",
+                    "success": False, "status": f"❌ retcode={retcode} {comment}",
+                })
                 return
 
             ticket = result.order
             self._log(f"✅ [{sname}] Тест BUY OK → #{ticket}, закрываем...")
+            self._trade_event({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "slave": sname, "symbol": slave_sym,
+                "direction": "BUY", "lot": lot,
+                "master_ticket": "TEST", "slave_ticket": str(ticket),
+                "success": True, "status": f"✅ TEST BUY #{ticket}",
+            })
 
             mt5.sleep(1000)
 

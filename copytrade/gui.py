@@ -773,7 +773,7 @@ class App(tk.Tk):
         self.btn_stop.pack(side="left", padx=2)
         self.btn_stop.config(state="disabled")
 
-        self._make_btn(btn_area, "\u2716 Все", self._close_all_open, danger=True).pack(side="left", padx=2)
+        self._make_btn(btn_area, "\u2716 Закрыть все сделки", self._close_all_open, danger=True).pack(side="left", padx=2)
 
         self._make_btn(btn_area, "\u25B6 Запуск всех", self._launch_all).pack(side="left", padx=2)
 
@@ -792,8 +792,14 @@ class App(tk.Tk):
                  font=FONT_SM, highlightthickness=1,
                  highlightbackground=BORDER, highlightcolor=ACCENT).grid(row=0, column=2, padx=4, sticky="ew")
         self._make_btn(master_f, "...", self._browse_master).grid(row=0, column=3, padx=2)
-        self._make_btn(master_f, "\U0001F4C8", self._open_master_terminal).grid(row=0, column=4, padx=(8, 2))
-        self._make_btn(master_f, "\u2716", self._close_all_master, danger=True).grid(row=0, column=5, padx=2)
+        tk.Button(master_f, text="\U0001F4C8", command=self._open_master_terminal,
+                  bg=BG_ROW, fg=FG_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
+                  cursor="hand2", width=2, highlightthickness=0).grid(row=0, column=4, padx=(8, 2))
+        tk.Button(master_f, text="\u2716", command=self._close_all_master,
+                  bg=BG_ROW, fg=RED_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=RED,
+                  cursor="hand2", width=2, highlightthickness=0).grid(row=0, column=5, padx=2)
 
         self.lbl_master_login = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                           font=FONT_MONO_SM, anchor="w")
