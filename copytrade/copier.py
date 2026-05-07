@@ -251,6 +251,131 @@ class CopyTrader:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def test_trade(self, slave_cfg: Dict, full_config: Dict):
+        """Тест копирования: открывает BUY мин.лотом и сразу закрывает."""
+        if mt5 is None:
+            self._log("❌ MT5 не установлен")
+            return
+        sid = slave_cfg.get("id", "?")
+        sname = slave_cfg.get("name", sid)
+        slave_path = slave_cfg.get("path", "")
+        symbol_map: Dict[str, str] = slave_cfg.get("symbol_map", {})
+
+        if not slave_path:
+            self._log(f"⚠️ [{sname}] Путь не задан")
+            return
+        if not is_terminal_running(slave_path):
+            self._log(f"⚠️ [{sname}] Терминал не запущен")
+            return
+        if not symbol_map:
+            self._log(f"⚠️ [{sname}] Нет символов в маппинге")
+            return
+
+        ok = mt5.initialize(path=slave_path)
+        if not ok:
+            self._log(f"⚠️ [{sname}] Ошибка подключения")
+            return
+
+        try:
+            ti = mt5.terminal_info()
+            if ti and not ti.trade_allowed:
+                self._log(f"⚠️ [{sname}] Алготрейдинг ВЫКЛ — включите в терминале!")
+                return
+
+            acc = mt5.account_info()
+            if acc is None:
+                self._log(f"⚠️ [{sname}] Нет данных аккаунта")
+                return
+
+            self._log(f"📊 [{sname}] Аккаунт #{acc.login} ${acc.balance:.2f}")
+
+            first_master_sym = next(iter(symbol_map))
+            raw_slave_sym = symbol_map[first_master_sym]
+            slave_sym = resolve_symbol(raw_slave_sym)
+            if slave_sym is None:
+                self._log(f"⚠️ [{sname}] Символ {raw_slave_sym} не найден")
+                return
+            if slave_sym != raw_slave_sym:
+                self._log(f"ℹ️ [{sname}] {raw_slave_sym} → {slave_sym}")
+
+            if not mt5.symbol_select(slave_sym, True):
+                self._log(f"⚠️ [{sname}] Не удалось добавить {slave_sym} в Market Watch")
+
+            sym_info = mt5.symbol_info(slave_sym)
+            if sym_info is None:
+                self._log(f"⚠️ [{sname}] symbol_info вернул None")
+                return
+
+            lot = sym_info.volume_min
+            tick = mt5.symbol_info_tick(slave_sym)
+            if tick is None:
+                self._log(f"⚠️ [{sname}] Нет тика для {slave_sym}")
+                return
+
+            filling = get_filling_mode(sym_info)
+            self._log(
+                f"📊 [{sname}] {slave_sym} vol_min={lot} filling={filling} "
+                f"filling_flags={sym_info.filling_mode} "
+                f"tick_val={sym_info.trade_tick_value} "
+                f"tick_sz={sym_info.trade_tick_size}"
+            )
+
+            price = normalize_price(tick.ask, sym_info.digits)
+            self._log(f"📤 [{sname}] Открываем BUY {slave_sym} lot={lot} price={price}")
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": slave_sym,
+                "volume": lot,
+                "type": mt5.ORDER_TYPE_BUY,
+                "price": price,
+                "comment": "CT_TEST",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+
+            result = try_send_order(request, self._log)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                retcode = result.retcode if result else -1
+                comment = result.comment if result else ""
+                self._log(
+                    f"❌ [{sname}] Тест FAILED: retcode={retcode} {comment}"
+                )
+                return
+
+            ticket = result.order
+            self._log(f"✅ [{sname}] Тест BUY OK → #{ticket}, закрываем...")
+
+            mt5.sleep(500)
+
+            positions = mt5.positions_get(ticket=ticket)
+            if positions:
+                pos = positions[0]
+                close_type = opposite_order_type(pos.type)
+                close_tick = mt5.symbol_info_tick(pos.symbol)
+                close_price = normalize_price(close_tick.bid, sym_info.digits)
+                close_req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": pos.symbol,
+                    "volume": pos.volume,
+                    "type": close_type,
+                    "position": pos.ticket,
+                    "price": close_price,
+                    "comment": "CT_TEST_CLOSE",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": filling,
+                }
+                close_result = try_send_order(close_req, self._log)
+                if close_result and close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                    self._log(f"✅ [{sname}] Тест закрыт #{ticket} — копирование работает!")
+                else:
+                    rc = close_result.retcode if close_result else -1
+                    self._log(f"⚠️ [{sname}] BUY открыт, но закрытие retcode={rc} — закройте вручную #{ticket}")
+            else:
+                self._log(f"ℹ️ [{sname}] Позиция #{ticket} уже закрыта (сработал SL/TP)")
+        finally:
+            mt5.shutdown()
+
     # ── Логирование ──────────────────────────────────────────
 
     def _log(self, msg: str):

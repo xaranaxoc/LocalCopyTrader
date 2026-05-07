@@ -76,10 +76,9 @@ COL_SPEC = [
     (4, "БАЛАНС", 88, 0, "e"),
     (5, "ЭКВИТИ", 88, 0, "e"),
     (6, "P&L", 72, 0, "e"),
-    (7, "ПОЗ.", 36, 0, "center"),
-    (8, "СИМВОЛЫ", 100, 1, "w"),
-    (9, "РИСК", 60, 0, "e"),
-    (10, "", 50, 0, "e"),
+    (7, "СИМВОЛЫ", 100, 1, "w"),
+    (8, "РИСК", 60, 0, "e"),
+    (9, "", 70, 0, "e"),
 ]
 
 
@@ -438,13 +437,14 @@ class SlaveDialog(tk.Toplevel):
 
 
 class AccountRow:
-    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle):
+    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test):
         self._parent = parent
         self._row = row_index
         self.slave_data = slave_data
         self._on_edit = on_edit
         self._on_delete = on_delete
         self._on_toggle = on_toggle
+        self._on_test = on_test
         self._hover = False
         self._leave_timer = None
         self._widgets = []
@@ -471,7 +471,7 @@ class AccountRow:
         r = self._row
 
         self._bg_frame = tk.Frame(self._parent, bg=bg)
-        self._bg_frame.grid(row=r, column=0, columnspan=11, sticky="nsew", pady=1)
+        self._bg_frame.grid(row=r, column=0, columnspan=10, sticky="nsew", pady=1)
         self._bg_frame.lower()
 
         enabled = d.get("enabled", True)
@@ -512,18 +512,13 @@ class AccountRow:
         self.lbl_pnl.grid(row=r, column=6, padx=4, sticky="ew")
         self._widgets.append(self.lbl_pnl)
 
-        self.lbl_positions = tk.Label(self._parent, text="", bg=bg, fg=ACCENT,
-                                       font=FONT_SM, anchor="center")
-        self.lbl_positions.grid(row=r, column=7, padx=4, sticky="ew")
-        self._widgets.append(self.lbl_positions)
-
         sym_map = d.get("symbol_map", {})
         sym_text = "  ".join(f"{k}\u2192{v}" for k, v in list(sym_map.items())[:3])
         if len(sym_map) > 3:
             sym_text += f" +{len(sym_map) - 3}"
         self.lbl_symbols = tk.Label(self._parent, text=sym_text or "\u2014", bg=bg, fg=FG_DIM,
                                      font=FONT_XS, anchor="w")
-        self.lbl_symbols.grid(row=r, column=8, padx=4, sticky="ew")
+        self.lbl_symbols.grid(row=r, column=7, padx=4, sticky="ew")
         self._widgets.append(self.lbl_symbols)
 
         rt = d.get("risk_type", "percent")
@@ -531,11 +526,15 @@ class AccountRow:
         risk_text = f"{rv}{'%' if rt == 'percent' else '$'}"
         self.lbl_risk = tk.Label(self._parent, text=risk_text, bg=bg, fg=YELLOW,
                                   font=FONT_SM, anchor="e")
-        self.lbl_risk.grid(row=r, column=9, padx=4, sticky="ew")
+        self.lbl_risk.grid(row=r, column=8, padx=4, sticky="ew")
         self._widgets.append(self.lbl_risk)
 
         bf = tk.Frame(self._parent, bg=bg)
-        bf.grid(row=r, column=10, padx=(2, 6), sticky="e")
+        bf.grid(row=r, column=9, padx=(2, 6), sticky="e")
+        tk.Button(bf, text="\u26A0", command=self._test,
+                  bg=bg, fg=YELLOW, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=YELLOW,
+                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
         tk.Button(bf, text="\u270E", command=self._edit,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
@@ -584,7 +583,7 @@ class AccountRow:
             pass
 
     def update_info(self, balance: float, equity: float, login: int = 0,
-                    positions: int = 0, status: str = ""):
+                    status: str = ""):
         bg = self._cur_bg()
         self.lbl_balance.config(text=f"${balance:,.2f}", bg=bg)
         self.lbl_equity.config(text=f"${equity:,.2f}", bg=bg)
@@ -595,9 +594,6 @@ class AccountRow:
         pnl_color = GREEN if pnl >= 0 else RED
         pnl_sign = "+" if pnl >= 0 else ""
         self.lbl_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color, bg=bg)
-
-        if positions >= 0:
-            self.lbl_positions.config(text=str(positions) if positions > 0 else "", bg=bg)
 
         if status:
             dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
@@ -633,6 +629,10 @@ class AccountRow:
     def _delete(self):
         if self._on_delete:
             self._on_delete(self.slave_data, self)
+
+    def _test(self):
+        if self._on_test:
+            self._on_test(self.slave_data)
 
     def destroy(self):
         if self._leave_timer:
@@ -794,10 +794,6 @@ class App(tk.Tk):
                                         font=FONT_VAL, anchor="e")
         self.lbl_master_pnl.grid(row=0, column=7, padx=4, sticky="ew")
 
-        self.lbl_master_pos = tk.Label(master_f, text="", bg=BG_ROW, fg=ACCENT,
-                                        font=FONT_SM, anchor="center")
-        self.lbl_master_pos.grid(row=0, column=8, padx=4, sticky="ew")
-
         master_f.columnconfigure(2, weight=1)
 
         # ── Таблица аккаунтов ────────────────────────────────────
@@ -811,7 +807,7 @@ class App(tk.Tk):
             tk.Label(self._table_frame, text=text, bg=BG, fg=FG_DIM,
                      font=FONT_XS, anchor=anchor).grid(row=0, column=idx, padx=2, pady=(2, 0), sticky="ew")
         self._make_btn(self._table_frame, "+ Аккаунт", self._add_slave,
-                       accent=True).grid(row=0, column=10, sticky="e", padx=2, pady=(2, 0))
+                       accent=True).grid(row=0, column=9, sticky="e", padx=2, pady=(2, 0))
         self._next_row = 1
 
         # Статистика
@@ -883,7 +879,8 @@ class App(tk.Tk):
         row = AccountRow(self._table_frame, self._next_row, data,
                          on_edit=self._edit_slave,
                          on_delete=self._delete_slave,
-                         on_toggle=self._toggle_slave)
+                         on_toggle=self._toggle_slave,
+                         on_test=self._test_slave)
         self._rows.append(row)
         self._next_row += 1
 
@@ -916,6 +913,24 @@ class App(tk.Tk):
 
     def _toggle_slave(self, data: Dict):
         self._save_config()
+
+    def _test_slave(self, data: Dict):
+        if not _COPIER_OK:
+            self._log("\u274C copier.py не найден", "err")
+            return
+        symbol_map = data.get("symbol_map", {})
+        if not symbol_map:
+            self._log("\u26A0\uFE0F Нет символов в маппинге", "warn")
+            return
+        self._log(f"\U0001F9EA Тест копирования [{data.get('name', '?')}]", "warn")
+        cfg = self._build_config()
+        trader = CopyTrader(
+            config=cfg, state_file=STATE_FILE,
+            log_callback=self._on_log,
+            status_callback=self._on_status,
+            config_file=CONFIG_FILE,
+        )
+        trader.test_trade(data, cfg)
 
     # ── Мин. лот режим ──────────────────────────────────────
 
@@ -987,7 +1002,6 @@ class App(tk.Tk):
                 acc = mt5.account_info()
                 if acc:
                     ti = mt5.terminal_info()
-                    positions = mt5.positions_get() or []
                     pnl = acc.equity - acc.balance
                     pnl_color = GREEN if pnl >= 0 else RED
                     pnl_sign = "+" if pnl >= 0 else ""
@@ -1000,7 +1014,6 @@ class App(tk.Tk):
                     self.lbl_master_bal.config(text=f"${acc.balance:,.2f}")
                     self.lbl_master_eq.config(text=f"${acc.equity:,.2f}")
                     self.lbl_master_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color)
-                    self.lbl_master_pos.config(text=str(len(positions)) if positions else "")
                 else:
                     self.lbl_master_login.config(text="нет аккаунта", fg=RED)
             finally:
@@ -1022,14 +1035,12 @@ class App(tk.Tk):
                 if acc:
                     ti = mt5.terminal_info()
                     at_off = ti and not ti.trade_allowed
-                    positions = mt5.positions_get() or []
                     if at_off:
                         status = f"\U0001F7E1 \u26A0AT #{acc.login}"
                         self._log(f"\u26A0\uFE0F [{slave.get('name', '?')}] Алготрейдинг ВЫКЛ!", "warn")
                     else:
                         status = f"\U0001F7E2 #{acc.login}"
-                    row.update_info(acc.balance, acc.equity, acc.login,
-                                    len(positions), status)
+                    row.update_info(acc.balance, acc.equity, acc.login, status)
                 else:
                     row.update_info(0, 0, status="\U0001F534 нет аккаунта")
             finally:
