@@ -78,7 +78,7 @@ COL_SPEC = [
     (6, "P&L", 72, 0, "e"),
     (7, "СИМВОЛЫ", 100, 1, "w"),
     (8, "РИСК", 60, 0, "e"),
-    (9, "", 70, 0, "e"),
+    (9, "", 90, 0, "e"),
 ]
 
 
@@ -437,7 +437,7 @@ class SlaveDialog(tk.Toplevel):
 
 
 class AccountRow:
-    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test):
+    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test, on_open):
         self._parent = parent
         self._row = row_index
         self.slave_data = slave_data
@@ -445,6 +445,7 @@ class AccountRow:
         self._on_delete = on_delete
         self._on_toggle = on_toggle
         self._on_test = on_test
+        self._on_open = on_open
         self._hover = False
         self._leave_timer = None
         self._widgets = []
@@ -531,6 +532,10 @@ class AccountRow:
 
         bf = tk.Frame(self._parent, bg=bg)
         bf.grid(row=r, column=9, padx=(2, 6), sticky="e")
+        tk.Button(bf, text="\U0001F4C2", command=self._open_terminal,
+                  bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
+                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
         tk.Button(bf, text="\u26A0", command=self._test,
                   bg=bg, fg=YELLOW, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=YELLOW,
@@ -633,6 +638,10 @@ class AccountRow:
     def _test(self):
         if self._on_test:
             self._on_test(self.slave_data)
+
+    def _open_terminal(self):
+        if self._on_open:
+            self._on_open(self.slave_data)
 
     def destroy(self):
         if self._leave_timer:
@@ -777,6 +786,7 @@ class App(tk.Tk):
                  font=FONT_SM, highlightthickness=1,
                  highlightbackground=BORDER, highlightcolor=ACCENT).grid(row=0, column=2, padx=4, sticky="ew")
         self._make_btn(master_f, "...", self._browse_master).grid(row=0, column=3, padx=2)
+        self._make_btn(master_f, "\U0001F4C2", self._open_master_terminal).grid(row=0, column=3, padx=(40, 2))
 
         self.lbl_master_login = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                           font=FONT_MONO_SM, anchor="w")
@@ -862,6 +872,13 @@ class App(tk.Tk):
             self.var_master_path.set(path.replace("/", "\\"))
             self._save_config()
 
+    def _open_master_terminal(self):
+        path = self.var_master_path.get().strip()
+        if not path:
+            self._log("\u26A0\uFE0F Путь мастера не задан", "warn")
+            return
+        self._open_terminal_path(path)
+
     # ── Слейвы ──────────────────────────────────────────────
 
     def _add_slave(self):
@@ -880,7 +897,8 @@ class App(tk.Tk):
                          on_edit=self._edit_slave,
                          on_delete=self._delete_slave,
                          on_toggle=self._toggle_slave,
-                         on_test=self._test_slave)
+                         on_test=self._test_slave,
+                         on_open=self._open_slave_terminal)
         self._rows.append(row)
         self._next_row += 1
 
@@ -931,6 +949,26 @@ class App(tk.Tk):
             config_file=CONFIG_FILE,
         )
         trader.test_trade(data, cfg)
+
+    def _open_slave_terminal(self, data: Dict):
+        path = data.get("path", "")
+        if not path:
+            self._log("\u26A0\uFE0F Путь к терминалу не задан", "warn")
+            return
+        self._open_terminal_path(path)
+
+    def _open_terminal_path(self, path: str):
+        if not is_terminal_running(path):
+            try:
+                os.startfile(path)
+                self._log(f"\U0001F680 Запуск: {os.path.basename(os.path.dirname(path))}")
+            except Exception as e:
+                self._log(f"\u274C Ошибка запуска: {e}", "err")
+        else:
+            try:
+                os.startfile(os.path.dirname(path))
+            except Exception as e:
+                self._log(f"\u274C Ошибка: {e}", "err")
 
     # ── Мин. лот режим ──────────────────────────────────────
 

@@ -346,33 +346,44 @@ class CopyTrader:
             ticket = result.order
             self._log(f"✅ [{sname}] Тест BUY OK → #{ticket}, закрываем...")
 
-            mt5.sleep(500)
+            mt5.sleep(1000)
 
-            positions = mt5.positions_get(ticket=ticket)
-            if positions:
-                pos = positions[0]
-                close_type = opposite_order_type(pos.type)
-                close_tick = mt5.symbol_info_tick(pos.symbol)
-                close_price = normalize_price(close_tick.bid, sym_info.digits)
-                close_req = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": pos.symbol,
-                    "volume": pos.volume,
-                    "type": close_type,
-                    "position": pos.ticket,
-                    "price": close_price,
-                    "comment": "CT_TEST_CLOSE",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": filling,
-                }
-                close_result = try_send_order(close_req, self._log)
-                if close_result and close_result.retcode == mt5.TRADE_RETCODE_DONE:
-                    self._log(f"✅ [{sname}] Тест закрыт #{ticket} — копирование работает!")
-                else:
-                    rc = close_result.retcode if close_result else -1
-                    self._log(f"⚠️ [{sname}] BUY открыт, но закрытие retcode={rc} — закройте вручную #{ticket}")
+            pos = None
+            all_pos = mt5.positions_get(symbol=slave_sym)
+            if all_pos:
+                for p in all_pos:
+                    if p.comment == "CT_TEST":
+                        pos = p
+                        break
+            if pos is None:
+                self._log(f"ℹ️ [{sname}] Позиция не найдена — возможно уже закрыта")
+                return
+
+            close_type = opposite_order_type(pos.type)
+            close_tick = mt5.symbol_info_tick(pos.symbol)
+            if close_tick is None:
+                self._log(f"⚠️ [{sname}] Нет тика для закрытия #{pos.ticket}")
+                return
+            close_price = normalize_price(close_tick.bid, sym_info.digits)
+
+            close_req = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": pos.volume,
+                "type": close_type,
+                "position": pos.ticket,
+                "price": close_price,
+                "comment": "CT_TEST_CLOSE",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+            close_result = try_send_order(close_req, self._log)
+            if close_result and close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                self._log(f"✅ [{sname}] Тест закрыт #{pos.ticket} — копирование работает!")
             else:
-                self._log(f"ℹ️ [{sname}] Позиция #{ticket} уже закрыта (сработал SL/TP)")
+                rc = close_result.retcode if close_result else -1
+                cmt = close_result.comment if close_result else ""
+                self._log(f"⚠️ [{sname}] BUY открыт, закрытие retcode={rc} {cmt} — закройте вручную #{pos.ticket}")
         finally:
             mt5.shutdown()
 
