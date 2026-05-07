@@ -5,6 +5,8 @@ MT5 Local Copy Trader — логика копирования сделок
 import os
 import json
 import threading
+import ctypes
+from ctypes import wintypes
 from datetime import datetime
 from typing import Callable, Dict, Any, Optional
 
@@ -36,6 +38,47 @@ def is_terminal_running(path: str) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
     return False
+
+
+def activate_terminal(path: str) -> bool:
+    """Находит окно терминала по пути и выводит на передний план."""
+    if psutil is None:
+        return False
+    norm_path = os.path.normcase(os.path.abspath(path))
+    pids = []
+    for proc in psutil.process_iter(['exe', 'pid']):
+        try:
+            exe = proc.info.get('exe')
+            if exe and os.path.normcase(exe) == norm_path:
+                pids.append(proc.info['pid'])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    if not pids:
+        return False
+
+    user32 = ctypes.windll.user32
+    EnumWindows = user32.EnumWindows
+    GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+    IsWindowVisible = user32.IsWindowVisible
+    SetForegroundWindow = user32.SetForegroundWindow
+    ShowWindow = user32.ShowWindow
+    SW_RESTORE = 9
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    result = [False]
+
+    def enum_cb(hwnd, _):
+        pid = wintypes.DWORD()
+        GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and IsWindowVisible(hwnd):
+            ShowWindow(hwnd, SW_RESTORE)
+            SetForegroundWindow(hwnd)
+            result[0] = True
+            return False
+        return True
+
+    EnumWindows(WNDENUMPROC(enum_cb), 0)
+    return result[0]
 
 
 def load_state(state_file: str) -> Dict:
@@ -384,6 +427,67 @@ class CopyTrader:
                 rc = close_result.retcode if close_result else -1
                 cmt = close_result.comment if close_result else ""
                 self._log(f"⚠️ [{sname}] BUY открыт, закрытие retcode={rc} {cmt} — закройте вручную #{pos.ticket}")
+        finally:
+            mt5.shutdown()
+
+    def close_all_positions(self, slave_cfg: Dict):
+        """Закрывает все открытые позиции на аккаунте слейва."""
+        if mt5 is None:
+            self._log("❌ MT5 не установлен")
+            return
+        sid = slave_cfg.get("id", "?")
+        sname = slave_cfg.get("name", sid)
+        slave_path = slave_cfg.get("path", "")
+
+        if not slave_path:
+            self._log(f"⚠️ [{sname}] Путь не задан")
+            return
+        if not is_terminal_running(slave_path):
+            self._log(f"⚠️ [{sname}] Терминал не запущен")
+            return
+
+        ok = mt5.initialize(path=slave_path)
+        if not ok:
+            self._log(f"⚠️ [{sname}] Ошибка подключения")
+            return
+
+        try:
+            positions = mt5.positions_get()
+            if not positions:
+                self._log(f"ℹ️ [{sname}] Нет открытых позиций")
+                return
+
+            self._log(f"🔴 [{sname}] Закрываем {len(positions)} позиций...")
+            closed = 0
+            for pos in positions:
+                tick = mt5.symbol_info_tick(pos.symbol)
+                if tick is None:
+                    self._log(f"⚠️ [{sname}] Нет тика для {pos.symbol}")
+                    continue
+                sym_info = mt5.symbol_info(pos.symbol)
+                filling = get_filling_mode(sym_info) if sym_info else mt5.ORDER_FILLING_IOC
+                close_type = opposite_order_type(pos.type)
+                price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+                if sym_info:
+                    price = normalize_price(price, sym_info.digits)
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": pos.symbol,
+                    "volume": pos.volume,
+                    "type": close_type,
+                    "position": pos.ticket,
+                    "price": price,
+                    "comment": "CT_CLOSE_ALL",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": filling,
+                }
+                result = try_send_order(request, self._log)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    closed += 1
+                else:
+                    rc = result.retcode if result else -1
+                    self._log(f"❌ [{sname}] Ошибка закрытия #{pos.ticket} {pos.symbol} retcode={rc}")
+            self._log(f"✅ [{sname}] Закрыто {closed}/{len(positions)} позиций")
         finally:
             mt5.shutdown()
 

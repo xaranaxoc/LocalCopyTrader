@@ -25,7 +25,7 @@ except ImportError:
     _PSUTIL_OK = False
 
 try:
-    from copier import CopyTrader, is_terminal_running
+    from copier import CopyTrader, is_terminal_running, activate_terminal
     _COPIER_OK = True
 except ImportError:
     _COPIER_OK = False
@@ -78,7 +78,7 @@ COL_SPEC = [
     (6, "P&L", 72, 0, "e"),
     (7, "СИМВОЛЫ", 100, 1, "w"),
     (8, "РИСК", 60, 0, "e"),
-    (9, "", 90, 0, "e"),
+    (9, "", 110, 0, "e"),
 ]
 
 
@@ -437,7 +437,7 @@ class SlaveDialog(tk.Toplevel):
 
 
 class AccountRow:
-    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test, on_open):
+    def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test, on_open, on_close_all):
         self._parent = parent
         self._row = row_index
         self.slave_data = slave_data
@@ -446,6 +446,7 @@ class AccountRow:
         self._on_toggle = on_toggle
         self._on_test = on_test
         self._on_open = on_open
+        self._on_close_all = on_close_all
         self._hover = False
         self._leave_timer = None
         self._widgets = []
@@ -535,6 +536,10 @@ class AccountRow:
         tk.Button(bf, text="\U0001F4C2", command=self._open_terminal,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
+                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
+        tk.Button(bf, text="\u2716", command=self._close_all,
+                  bg=bg, fg=RED_DIM, relief="flat", font=FONT_SM,
+                  activebackground=BG_ROW_HOVER, activeforeground=RED,
                   cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
         tk.Button(bf, text="\u26A0", command=self._test,
                   bg=bg, fg=YELLOW, relief="flat", font=FONT_SM,
@@ -642,6 +647,10 @@ class AccountRow:
     def _open_terminal(self):
         if self._on_open:
             self._on_open(self.slave_data)
+
+    def _close_all(self):
+        if self._on_close_all:
+            self._on_close_all(self.slave_data)
 
     def destroy(self):
         if self._leave_timer:
@@ -898,7 +907,8 @@ class App(tk.Tk):
                          on_delete=self._delete_slave,
                          on_toggle=self._toggle_slave,
                          on_test=self._test_slave,
-                         on_open=self._open_slave_terminal)
+                         on_open=self._open_slave_terminal,
+                         on_close_all=self._close_all_slave)
         self._rows.append(row)
         self._next_row += 1
 
@@ -965,10 +975,28 @@ class App(tk.Tk):
             except Exception as e:
                 self._log(f"\u274C Ошибка запуска: {e}", "err")
         else:
-            try:
-                os.startfile(os.path.dirname(path))
-            except Exception as e:
-                self._log(f"\u274C Ошибка: {e}", "err")
+            if activate_terminal(path):
+                self._log(f"\U0001F4C2 Терминал активирован")
+            else:
+                self._log("\u26A0\uFE0F Не удалось найти окно терминала", "warn")
+
+    def _close_all_slave(self, data: Dict):
+        if not _COPIER_OK:
+            self._log("\u274C copier.py не найден", "err")
+            return
+        sname = data.get("name", "?")
+        if not messagebox.askyesno("Закрыть все позиции",
+                f"Закрыть ВСЕ позиции на \u00AB{sname}\u00BB?", parent=self):
+            return
+        self._log(f"\u2716 Закрытие всех позиций [{sname}]...", "warn")
+        cfg = self._build_config()
+        trader = CopyTrader(
+            config=cfg, state_file=STATE_FILE,
+            log_callback=self._on_log,
+            status_callback=self._on_status,
+            config_file=CONFIG_FILE,
+        )
+        trader.close_all_positions(data)
 
     # ── Мин. лот режим ──────────────────────────────────────
 
