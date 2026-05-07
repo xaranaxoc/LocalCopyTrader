@@ -430,39 +430,35 @@ class CopyTrader:
         finally:
             mt5.shutdown()
 
-    def close_all_positions(self, slave_cfg: Dict):
-        """Закрывает все открытые позиции на аккаунте слейва."""
+    def close_all_positions(self, terminal_path: str, label: str = ""):
+        """Закрывает все открытые позиции на аккаунте терминала."""
         if mt5 is None:
             self._log("❌ MT5 не установлен")
             return
-        sid = slave_cfg.get("id", "?")
-        sname = slave_cfg.get("name", sid)
-        slave_path = slave_cfg.get("path", "")
-
-        if not slave_path:
-            self._log(f"⚠️ [{sname}] Путь не задан")
+        if not terminal_path:
+            self._log(f"⚠️ [{label}] Путь не задан")
             return
-        if not is_terminal_running(slave_path):
-            self._log(f"⚠️ [{sname}] Терминал не запущен")
+        if not is_terminal_running(terminal_path):
+            self._log(f"⚠️ [{label}] Терминал не запущен")
             return
 
-        ok = mt5.initialize(path=slave_path)
+        ok = mt5.initialize(path=terminal_path)
         if not ok:
-            self._log(f"⚠️ [{sname}] Ошибка подключения")
+            self._log(f"⚠️ [{label}] Ошибка подключения")
             return
 
         try:
             positions = mt5.positions_get()
             if not positions:
-                self._log(f"ℹ️ [{sname}] Нет открытых позиций")
+                self._log(f"ℹ️ [{label}] Нет открытых позиций")
                 return
 
-            self._log(f"🔴 [{sname}] Закрываем {len(positions)} позиций...")
+            self._log(f"🔴 [{label}] Закрываем {len(positions)} позиций...")
             closed = 0
             for pos in positions:
                 tick = mt5.symbol_info_tick(pos.symbol)
                 if tick is None:
-                    self._log(f"⚠️ [{sname}] Нет тика для {pos.symbol}")
+                    self._log(f"⚠️ [{label}] Нет тика для {pos.symbol}")
                     continue
                 sym_info = mt5.symbol_info(pos.symbol)
                 filling = get_filling_mode(sym_info) if sym_info else mt5.ORDER_FILLING_IOC
@@ -486,8 +482,8 @@ class CopyTrader:
                     closed += 1
                 else:
                     rc = result.retcode if result else -1
-                    self._log(f"❌ [{sname}] Ошибка закрытия #{pos.ticket} {pos.symbol} retcode={rc}")
-            self._log(f"✅ [{sname}] Закрыто {closed}/{len(positions)} позиций")
+                    self._log(f"❌ [{label}] Ошибка закрытия #{pos.ticket} {pos.symbol} retcode={rc}")
+            self._log(f"✅ [{label}] Закрыто {closed}/{len(positions)} позиций")
         finally:
             mt5.shutdown()
 

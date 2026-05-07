@@ -533,7 +533,7 @@ class AccountRow:
 
         bf = tk.Frame(self._parent, bg=bg)
         bf.grid(row=r, column=9, padx=(2, 6), sticky="e")
-        tk.Button(bf, text="\U0001F4C2", command=self._open_terminal,
+        tk.Button(bf, text="\U0001F4C8", command=self._open_terminal,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
                   cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
@@ -773,10 +773,7 @@ class App(tk.Tk):
         self.btn_stop.pack(side="left", padx=2)
         self.btn_stop.config(state="disabled")
 
-        self._make_btn(btn_area, "\U0001F50C Связь", self._check_connection).pack(side="left", padx=2)
-
-        self.btn_minlot = self._make_btn(btn_area, "Мин. лот", self._toggle_min_lot)
-        self.btn_minlot.pack(side="left", padx=2)
+        self._make_btn(btn_area, "\u2716 Все", self._close_all_open, danger=True).pack(side="left", padx=2)
 
         self._make_btn(btn_area, "\u25B6 Запуск всех", self._launch_all).pack(side="left", padx=2)
 
@@ -795,23 +792,24 @@ class App(tk.Tk):
                  font=FONT_SM, highlightthickness=1,
                  highlightbackground=BORDER, highlightcolor=ACCENT).grid(row=0, column=2, padx=4, sticky="ew")
         self._make_btn(master_f, "...", self._browse_master).grid(row=0, column=3, padx=2)
-        self._make_btn(master_f, "\U0001F4C2", self._open_master_terminal).grid(row=0, column=3, padx=(40, 2))
+        self._make_btn(master_f, "\U0001F4C8", self._open_master_terminal).grid(row=0, column=4, padx=(8, 2))
+        self._make_btn(master_f, "\u2716", self._close_all_master, danger=True).grid(row=0, column=5, padx=2)
 
         self.lbl_master_login = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                           font=FONT_MONO_SM, anchor="w")
-        self.lbl_master_login.grid(row=0, column=4, padx=6, sticky="ew")
+        self.lbl_master_login.grid(row=0, column=6, padx=6, sticky="ew")
 
         self.lbl_master_bal = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG,
                                         font=FONT_VAL_BOLD, anchor="e")
-        self.lbl_master_bal.grid(row=0, column=5, padx=4, sticky="ew")
+        self.lbl_master_bal.grid(row=0, column=7, padx=4, sticky="ew")
 
         self.lbl_master_eq = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                        font=FONT_MONO_SM, anchor="e")
-        self.lbl_master_eq.grid(row=0, column=6, padx=4, sticky="ew")
+        self.lbl_master_eq.grid(row=0, column=8, padx=4, sticky="ew")
 
         self.lbl_master_pnl = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                         font=FONT_VAL, anchor="e")
-        self.lbl_master_pnl.grid(row=0, column=7, padx=4, sticky="ew")
+        self.lbl_master_pnl.grid(row=0, column=9, padx=4, sticky="ew")
 
         master_f.columnconfigure(2, weight=1)
 
@@ -887,6 +885,37 @@ class App(tk.Tk):
             self._log("\u26A0\uFE0F Путь мастера не задан", "warn")
             return
         self._open_terminal_path(path)
+
+    def _close_all_master(self):
+        if not _COPIER_OK:
+            self._log("\u274C copier.py не найден", "err")
+            return
+        path = self.var_master_path.get().strip()
+        if not path:
+            return
+        self._log("\u2716 Закрытие всех позиций [МАСТЕР]...", "warn")
+        cfg = self._build_config()
+        trader = CopyTrader(
+            config=cfg, state_file=STATE_FILE,
+            log_callback=self._on_log,
+            status_callback=self._on_status,
+            config_file=CONFIG_FILE,
+        )
+        trader.close_all_positions(path, "МАСТЕР")
+
+    def _close_all_open(self):
+        self._close_all_master()
+        for s in self._slaves:
+            if s.get("enabled", True) and s.get("path"):
+                if _COPIER_OK:
+                    cfg = self._build_config()
+                    trader = CopyTrader(
+                        config=cfg, state_file=STATE_FILE,
+                        log_callback=self._on_log,
+                        status_callback=self._on_status,
+                        config_file=CONFIG_FILE,
+                    )
+                    trader.close_all_positions(s["path"], s.get("name", "?"))
 
     # ── Слейвы ──────────────────────────────────────────────
 
@@ -985,9 +1014,6 @@ class App(tk.Tk):
             self._log("\u274C copier.py не найден", "err")
             return
         sname = data.get("name", "?")
-        if not messagebox.askyesno("Закрыть все позиции",
-                f"Закрыть ВСЕ позиции на \u00AB{sname}\u00BB?", parent=self):
-            return
         self._log(f"\u2716 Закрытие всех позиций [{sname}]...", "warn")
         cfg = self._build_config()
         trader = CopyTrader(
@@ -996,19 +1022,7 @@ class App(tk.Tk):
             status_callback=self._on_status,
             config_file=CONFIG_FILE,
         )
-        trader.close_all_positions(data)
-
-    # ── Мин. лот режим ──────────────────────────────────────
-
-    def _toggle_min_lot(self):
-        self._min_lot_mode = not self._min_lot_mode
-        if self._min_lot_mode:
-            self.btn_minlot.config(bg=YELLOW, fg=BG, text="Мин. лот ON")
-            self._log("\u26A0 Мин. лот режим ВКЛ — все позиции открываются минимальным лотом", "warn")
-        else:
-            self.btn_minlot.config(bg=BG_INPUT, fg=FG_LABEL, text="Мин. лот")
-            self._log("Мин. лот режим ВЫКЛ")
-        self._save_config()
+        trader.close_all_positions(data.get("path", ""), sname)
 
     # ── Запуск всех терминалов ──────────────────────────────
 
@@ -1043,18 +1057,14 @@ class App(tk.Tk):
         if self._check_timer:
             self.after_cancel(self._check_timer)
         if not (self._trader and self._trader.is_running()):
-            self._check_connection()
-            self._check_timer = self.after(10000, self._schedule_check)
+            self._update_master_info_silent()
+            for row, slave in zip(self._rows, self._slaves):
+                self._update_row_info_silent(row, slave)
+            self._check_timer = self.after(3000, self._schedule_check)
 
-    def _check_connection(self):
+    def _update_master_info_silent(self):
         if not _MT5_OK:
             return
-        self._update_master_info()
-        for row, slave in zip(self._rows, self._slaves):
-            self._update_row_info(row, slave)
-        self._log("\U0001F50C Связь проверена", "info")
-
-    def _update_master_info(self):
         master_path = self.var_master_path.get().strip()
         if not master_path:
             self.lbl_master_bal.config(text="\u2014", fg=FG_DIM)
@@ -1075,8 +1085,6 @@ class App(tk.Tk):
                     self.lbl_master_login.config(
                         text=f"#{acc.login}" + (" \u26A0AT" if at_off else ""),
                         fg=RED if at_off else FG_DIM)
-                    if at_off:
-                        self._log("\u26A0\uFE0F Мастер: Алготрейдинг ВЫКЛ!", "warn")
                     self.lbl_master_bal.config(text=f"${acc.balance:,.2f}")
                     self.lbl_master_eq.config(text=f"${acc.equity:,.2f}")
                     self.lbl_master_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color)
@@ -1087,7 +1095,9 @@ class App(tk.Tk):
         else:
             self.lbl_master_login.config(text="ошибка", fg=RED)
 
-    def _update_row_info(self, row: AccountRow, slave: Dict):
+    def _update_row_info_silent(self, row: AccountRow, slave: Dict):
+        if not _MT5_OK:
+            return
         slave_path = slave.get("path", "")
         if not slave_path:
             row.update_info(0, 0, status="\U0001F534 нет пути")
@@ -1103,7 +1113,6 @@ class App(tk.Tk):
                     at_off = ti and not ti.trade_allowed
                     if at_off:
                         status = f"\U0001F7E1 \u26A0AT #{acc.login}"
-                        self._log(f"\u26A0\uFE0F [{slave.get('name', '?')}] Алготрейдинг ВЫКЛ!", "warn")
                     else:
                         status = f"\U0001F7E2 #{acc.login}"
                     row.update_info(acc.balance, acc.equity, acc.login, status)
@@ -1269,8 +1278,6 @@ class App(tk.Tk):
             return
         self.var_master_path.set(cfg.get("master", {}).get("path", ""))
         self._min_lot_mode = cfg.get("min_lot_mode", False)
-        if self._min_lot_mode:
-            self.btn_minlot.config(bg=YELLOW, fg=BG, text="Мин. лот ON")
         for s in cfg.get("slaves", []):
             if "id" not in s:
                 s["id"] = str(uuid.uuid4())[:8]
