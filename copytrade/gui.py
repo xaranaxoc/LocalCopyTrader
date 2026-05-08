@@ -41,6 +41,10 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
 STATE_FILE = os.path.join(APP_DATA_DIR, "state.json")
 LOGS_DIR = os.path.join(APP_DATA_DIR, "logs")
 
+IMG_DIR = os.path.join(BASE_DIR, "img")
+ICON_DEFAULT = os.path.join(IMG_DIR, "FTH.ico")
+ICON_CYAN = os.path.join(IMG_DIR, "FTH-cyan.ico")
+
 # ── Цветовая палитра (neon cyan) ───────────────────────────
 BG_DEEP = "#080810"
 BG = "#0C0C14"
@@ -927,6 +931,8 @@ class App(tk.Tk):
         self.resizable(True, True)
         self.minsize(1100, 720)
         self.geometry("1140x760")
+        if os.path.exists(ICON_DEFAULT):
+            self.iconbitmap(ICON_DEFAULT)
 
         self._slaves: List[Dict] = []
         self._rows: List[AccountRow] = []
@@ -1507,6 +1513,8 @@ class App(tk.Tk):
         self._trader.start()
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
+        if os.path.exists(ICON_CYAN):
+            self.iconbitmap(ICON_CYAN)
         self._session_stats = {"copied": 0, "failed": 0}
         self._log("\u2705 Копитрейдер запущен", "ok")
 
@@ -1516,6 +1524,8 @@ class App(tk.Tk):
             self._trader = None
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
+        if os.path.exists(ICON_DEFAULT):
+            self.iconbitmap(ICON_DEFAULT)
         self._log("\u25A0 Копитрейдер остановлен", "warn")
         self._schedule_check()
 
