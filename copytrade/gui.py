@@ -20,6 +20,13 @@ except ImportError:
     _MT5_OK = False
 
 try:
+    import pystray
+    from PIL import Image as PILImage
+    _PYSTRAY_OK = True
+except ImportError:
+    _PYSTRAY_OK = False
+
+try:
     import psutil
     _PSUTIL_OK = True
 except ImportError:
@@ -33,15 +40,17 @@ except ImportError:
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
+    _BUNDLE_DIR = sys._MEIPASS
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _BUNDLE_DIR = BASE_DIR
 
 APP_DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "MT5CopyTrader")
 CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
 STATE_FILE = os.path.join(APP_DATA_DIR, "state.json")
 LOGS_DIR = os.path.join(APP_DATA_DIR, "logs")
 
-IMG_DIR = os.path.join(BASE_DIR, "img")
+IMG_DIR = os.path.join(_BUNDLE_DIR, "img")
 ICON_DEFAULT = os.path.join(IMG_DIR, "FTH.ico")
 ICON_CYAN = os.path.join(IMG_DIR, "FTH-cyan.ico")
 
@@ -941,24 +950,71 @@ class App(tk.Tk):
         self._check_timer = None
         self._session_stats = {"copied": 0, "failed": 0}
         self._min_lot_mode = False
+        self._tray_icon = None
 
         self._build_ui()
         self._load_config()
+        self._start_tray()
         self._schedule_check()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _set_logo_cyan(self, cyan: bool):
         if not hasattr(self, '_logo_label'):
             return
-        name = "FTH-cyan" if cyan else "FTH"
+        name = "convertico-fth-cyan_48x48" if cyan else "convertico-fth_48x48"
         path = os.path.join(IMG_DIR, f"{name}.png")
         if os.path.exists(path):
             try:
                 img = tk.PhotoImage(file=path)
-                logo_small = img.subsample(16, 16)
-                self._logo_label.configure(image=logo_small)
-                self._logo_small = logo_small
+                self._logo_label.configure(image=img)
                 self._logo_img = img
+            except Exception:
+                pass
+
+    def _start_tray(self):
+        if not _PYSTRAY_OK:
+            return
+        icon_path = ICON_DEFAULT
+        if not os.path.exists(icon_path):
+            return
+        try:
+            pil_img = PILImage.open(icon_path)
+            pil_img = pil_img.resize((32, 32), PILImage.LANCZOS)
+            menu = pystray.Menu(
+                pystray.MenuItem("Показать", self._tray_show, default=True),
+                pystray.MenuItem("Выход", self._tray_exit),
+            )
+            self._tray_icon = pystray.Icon("MT5CopyTrader", pil_img, "MT5 Copy Trader", menu)
+            self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
+            self._tray_thread.start()
+        except Exception:
+            self._tray_icon = None
+
+    def _tray_show(self, icon=None, item=None):
+        self.after(0, self._show_window)
+
+    def _show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _tray_exit(self, icon=None, item=None):
+        if self._tray_icon:
+            self._tray_icon.stop()
+            self._tray_icon = None
+        self.after(0, self.destroy)
+
+    def _update_tray_icon(self, cyan: bool):
+        if not self._tray_icon or not _PYSTRAY_OK:
+            return
+        icon_path = ICON_CYAN if cyan else ICON_DEFAULT
+        if os.path.exists(icon_path):
+            try:
+                pil_img = PILImage.open(icon_path)
+                pil_img = pil_img.resize((32, 32), PILImage.LANCZOS)
+                self._tray_icon.icon = pil_img
+                tip = "MT5 Copy Trader — работает" if cyan else "MT5 Copy Trader"
+                self._tray_icon.title = tip
             except Exception:
                 pass
 
@@ -982,14 +1038,12 @@ class App(tk.Tk):
         hdr_left = tk.Frame(hdr, bg=BG_HEADER)
         hdr_left.pack(side="left", padx=14, pady=(10, 8))
 
-        logo_path = os.path.join(IMG_DIR, "FTH.png")
+        logo_path = os.path.join(IMG_DIR, "convertico-fth_48x48.png")
         if os.path.exists(logo_path):
             try:
                 self._logo_img = tk.PhotoImage(file=logo_path)
-                logo_small = self._logo_img.subsample(16, 16)
-                self._logo_label = tk.Label(hdr_left, image=logo_small, bg=BG_HEADER)
+                self._logo_label = tk.Label(hdr_left, image=self._logo_img, bg=BG_HEADER)
                 self._logo_label.pack(side="left", padx=(0, 8))
-                self._logo_small = logo_small
             except Exception:
                 pass
         tk.Label(hdr_left, text="COPY TRADER", bg=BG_HEADER, fg=FG,
@@ -1543,6 +1597,7 @@ class App(tk.Tk):
             self.iconbitmap(ICON_CYAN)
             self.wm_iconbitmap(ICON_CYAN)
         self._set_logo_cyan(True)
+        self._update_tray_icon(True)
         self._session_stats = {"copied": 0, "failed": 0}
         self._log("\u2705 Копитрейдер запущен", "ok")
 
@@ -1556,6 +1611,7 @@ class App(tk.Tk):
             self.iconbitmap(ICON_DEFAULT)
             self.wm_iconbitmap(ICON_DEFAULT)
         self._set_logo_cyan(False)
+        self._update_tray_icon(False)
         self._log("\u25A0 Копитрейдер остановлен", "warn")
         self._schedule_check()
 
@@ -1700,6 +1756,9 @@ class App(tk.Tk):
                     "Копитрейдер запущен. Остановить и выйти?", parent=self):
                 return
             self._stop()
+        if self._tray_icon:
+            self._tray_icon.stop()
+            self._tray_icon = None
         self._save_config()
         self.destroy()
 
