@@ -254,12 +254,15 @@ class SlaveDialog(tk.Toplevel):
         self.title("Настройки аккаунта")
         self.resizable(False, False)
         self.configure(bg=BG)
-        self.grab_set()
-        if os.path.exists(ICON_DEFAULT):
-            self.iconbitmap(ICON_DEFAULT)
+        self.withdraw()
+        icon = ICON_CYAN if getattr(parent, '_trader', None) and parent._trader.is_running() else ICON_DEFAULT
+        if os.path.exists(icon):
+            self.iconbitmap(icon)
         data = slave_data or {}
         self._build(data)
         self._center(parent)
+        self.deiconify()
+        self.grab_set()
         self._load_symbols()
         self._skip_suggest = False
 
@@ -937,7 +940,7 @@ class TradesTable(tk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MT5 Copy Trader")
+        self.title("FTH Trade Copier")
         self.configure(bg=BG_DEEP)
         self.resizable(True, True)
         self.minsize(1100, 720)
@@ -985,7 +988,7 @@ class App(tk.Tk):
                 pystray.MenuItem("Показать", self._tray_show, default=True),
                 pystray.MenuItem("Выход", self._tray_exit),
             )
-            self._tray_icon = pystray.Icon("MT5CopyTrader", pil_img, "MT5 Copy Trader", menu)
+            self._tray_icon = pystray.Icon("FTHTradeCopier", pil_img, "FTH Trade Copier", menu)
             self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
             self._tray_thread.start()
         except Exception:
@@ -1014,7 +1017,7 @@ class App(tk.Tk):
             try:
                 pil_img = PILImage.open(png_path)
                 self._tray_icon.icon = pil_img
-                tip = "MT5 Copy Trader — работает" if cyan else "MT5 Copy Trader"
+                tip = "FTH Trade Copier — работает" if cyan else "FTH Trade Copier"
                 self._tray_icon.title = tip
             except Exception:
                 pass
@@ -1047,7 +1050,7 @@ class App(tk.Tk):
                 self._logo_label.pack(side="left", padx=(0, 8))
             except Exception:
                 pass
-        tk.Label(hdr_left, text="COPY TRADER", bg=BG_HEADER, fg=FG,
+        tk.Label(hdr_left, text="Trade Copier", bg=BG_HEADER, fg=FG,
                  font=FONT_TITLE).pack(side="left")
         tk.Label(hdr_left, text="  MT5", bg=BG_HEADER, fg=ACCENT,
                  font=("Segoe UI", 12)).pack(side="left", anchor="s")
