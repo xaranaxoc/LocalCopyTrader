@@ -237,6 +237,7 @@ class SlaveDialog(tk.Toplevel):
         self._parent_app = parent
         self._updating_risk = False
         self._skip_suggest = True
+        self._edit_id = (slave_data or {}).get("id", "")
         self.title("Настройки аккаунта")
         self.resizable(False, False)
         self.configure(bg=BG)
@@ -539,6 +540,13 @@ class SlaveDialog(tk.Toplevel):
         if not path:
             messagebox.showwarning("Ошибка", "Укажите путь", parent=self)
             return
+        norm_path = os.path.normcase(os.path.abspath(path))
+        for slave in self._parent_app._slaves:
+            existing = slave.get("path", "")
+            if existing and os.path.normcase(os.path.abspath(existing)) == norm_path:
+                if slave.get("id", "") != self._edit_id:
+                    messagebox.showwarning("Ошибка", "Этот терминал уже добавлен", parent=self)
+                    return
 
         symbol_map = {}
         for row in self._symbol_rows:
@@ -768,7 +776,7 @@ class AccountRow:
 
     def update_info(self, balance: float, equity: float, login: int = 0,
                     status: str = ""):
-        bg = self._cur_bg()
+        bg = BG_ROW
         self.lbl_balance.config(text=f"${balance:,.2f}", bg=bg)
         self.lbl_equity.config(text=f"${equity:,.2f}", bg=bg)
         if login:
@@ -785,7 +793,7 @@ class AccountRow:
             self._dot_canvas.configure(bg=bg)
 
     def update_status_only(self, status: str, balance: float = 0, equity: float = 0):
-        bg = self._cur_bg()
+        bg = BG_ROW
         dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
         self._dot_canvas.itemconfigure(self._dot_oval, fill=dot_color)
         self._dot_canvas.configure(bg=bg)
