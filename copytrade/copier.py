@@ -7,7 +7,7 @@ import json
 import threading
 import ctypes
 from ctypes import wintypes
-from datetime import datetime
+from datetime import datetime, date
 from typing import Callable, Dict, Any, Optional
 
 try:
@@ -26,9 +26,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 
 def is_terminal_running(path: str) -> bool:
-    """Проверяет, запущен ли процесс terminal64.exe по указанному пути."""
     if psutil is None:
-        return True  # если psutil недоступен — не блокируем
+        return True
     norm_path = os.path.normcase(os.path.abspath(path))
     for proc in psutil.process_iter(['exe']):
         try:
@@ -41,7 +40,6 @@ def is_terminal_running(path: str) -> bool:
 
 
 def activate_terminal(path: str) -> bool:
-    """Находит окно терминала по пути и выводит на передний план."""
     if psutil is None:
         return False
     norm_path = os.path.normcase(os.path.abspath(path))
@@ -82,14 +80,20 @@ def activate_terminal(path: str) -> bool:
 
 
 def load_state(state_file: str) -> Dict:
-    """Загружает состояние из файла."""
     if os.path.exists(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            if "positions" not in data:
+                data["positions"] = {}
+            if "orders" not in data:
+                data["orders"] = {}
+            if "daily_trades" not in data:
+                data["daily_trades"] = {}
+            return data
         except Exception:
             pass
-    return {"positions": {}, "orders": {}}
+    return {"positions": {}, "orders": {}, "daily_trades": {}}
 
 
 def save_state(state_file: str, state: Dict) -> None:
@@ -103,7 +107,6 @@ def save_state(state_file: str, state: Dict) -> None:
 def calculate_lot(symbol_info, sl_distance: float,
                    risk_type: str, risk_value: float,
                    balance: float) -> float:
-    """Рассчитывает лот по методу PositionSizer."""
     if sl_distance <= 0:
         return 0.0
 
@@ -112,7 +115,6 @@ def calculate_lot(symbol_info, sl_distance: float,
     tick_value_loss = abs(symbol_info.trade_tick_value_loss or 0.0)
     contract_size = symbol_info.trade_contract_size or 0.0
 
-    # Берём максимум из всех источников — консервативный подход
     tick_value = max(tick_value_profit, tick_value_loss)
     if contract_size > 0 and tick_size > 0:
         tick_value = max(tick_value, abs(contract_size * tick_size))
@@ -141,7 +143,6 @@ def calculate_lot(symbol_info, sl_distance: float,
 
 
 def resolve_symbol(name: str) -> Optional[str]:
-    """Находит символ с учётом регистра. Возвращает корректное имя или None."""
     if mt5 is None:
         return name
     info = mt5.symbol_info(name)
@@ -157,7 +158,6 @@ def resolve_symbol(name: str) -> Optional[str]:
 
 
 def get_filling_mode(symbol_info) -> int:
-    """Определяет filling mode. Пробуем FOK → IOC → RETURN."""
     if mt5 is None:
         return 0
     filling = symbol_info.filling_mode
@@ -169,7 +169,6 @@ def get_filling_mode(symbol_info) -> int:
 
 
 def try_send_order(request: Dict, log_fn=None) -> object:
-    """Отправляет order_send, при retcode=10030 пробует другие filling modes."""
     result = mt5.order_send(request)
     if result is not None and result.retcode == 10030:
         original_filling = request.get("type_filling", 0)
@@ -202,12 +201,10 @@ def try_send_order(request: Dict, log_fn=None) -> object:
 
 
 def normalize_price(price: float, digits: int) -> float:
-    """Округляет цену до указанного количества знаков."""
     return round(price, digits)
 
 
 def opposite_order_type(order_type: int) -> int:
-    """Возвращает противоположный тип ордера для закрытия позиции."""
     if mt5 is None:
         return 0
     if order_type == mt5.ORDER_TYPE_BUY:
@@ -218,7 +215,6 @@ def opposite_order_type(order_type: int) -> int:
 
 
 def order_type_name(order_type: int) -> str:
-    """Возвращает текстовое название типа ордера."""
     if mt5 is None:
         return str(order_type)
     names = {
@@ -272,8 +268,19 @@ class CopyTrader:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._drawdown_paused: Dict[str, bool] = {}
+        self._trades_paused: Dict[str, bool] = {}
 
         self.state = load_state(state_file)
+
+    # ── Статический метод: поиск ключа в dict без учёта регистра ──
+
+    @staticmethod
+    def _sym_lookup(d: Dict[str, Any], key: str) -> Optional[Any]:
+        key_upper = key.upper()
+        for k, v in d.items():
+            if k.upper() == key_upper:
+                return v
+        return None
 
     # ── Публичный интерфейс ──────────────────────────────────
 
@@ -295,7 +302,7 @@ class CopyTrader:
         return self._thread is not None and self._thread.is_alive()
 
     def test_trade(self, slave_cfg: Dict, full_config: Dict):
-        """Тест копирования: открывает BUY мин.лотом и сразу закрывает."""
+        """Тест копирования: пробует ВСЕ символы из маппинга, открывает BUY мин.лотом и сразу закрывает."""
         if mt5 is None:
             self._log("❌ MT5 не установлен")
             return
@@ -332,115 +339,125 @@ class CopyTrader:
 
             self._log(f"📊 [{sname}] Аккаунт #{acc.login} ${acc.balance:.2f}")
 
-            first_master_sym = next(iter(symbol_map))
-            raw_slave_sym = symbol_map[first_master_sym]
-            slave_sym = resolve_symbol(raw_slave_sym)
-            if slave_sym is None:
-                self._log(f"⚠️ [{sname}] Символ {raw_slave_sym} не найден")
-                return
-            if slave_sym != raw_slave_sym:
-                self._log(f"ℹ️ [{sname}] {raw_slave_sym} → {slave_sym}")
+            for master_sym, raw_slave_sym in symbol_map.items():
+                slave_sym = resolve_symbol(raw_slave_sym)
+                if slave_sym is None:
+                    self._log(f"⚠️ [{sname}] Символ {raw_slave_sym} не найден, пробуем следующий")
+                    continue
+                if slave_sym != raw_slave_sym:
+                    self._log(f"ℹ️ [{sname}] {raw_slave_sym} → {slave_sym}")
 
-            if not mt5.symbol_select(slave_sym, True):
-                self._log(f"⚠️ [{sname}] Не удалось добавить {slave_sym} в Market Watch")
+                if not mt5.symbol_select(slave_sym, True):
+                    self._log(f"⚠️ [{sname}] Не удалось добавить {slave_sym} в Market Watch, пробуем следующий")
+                    continue
 
-            sym_info = mt5.symbol_info(slave_sym)
-            if sym_info is None:
-                self._log(f"⚠️ [{sname}] symbol_info вернул None")
-                return
+                sym_info = mt5.symbol_info(slave_sym)
+                if sym_info is None:
+                    self._log(f"⚠️ [{sname}] symbol_info вернул None для {slave_sym}, пробуем следующий")
+                    continue
 
-            lot = sym_info.volume_min
-            tick = mt5.symbol_info_tick(slave_sym)
-            if tick is None:
-                self._log(f"⚠️ [{sname}] Нет тика для {slave_sym}")
-                return
+                if sym_info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+                    self._log(
+                        f"⚠️ [{sname}] {slave_sym} trade_mode={sym_info.trade_mode} "
+                        f"(не FULL), пробуем следующий"
+                    )
+                    continue
 
-            filling = get_filling_mode(sym_info)
-            self._log(
-                f"📊 [{sname}] {slave_sym} vol_min={lot} filling={filling} "
-                f"filling_flags={sym_info.filling_mode} "
-                f"tick_val={sym_info.trade_tick_value} "
-                f"tick_sz={sym_info.trade_tick_size}"
-            )
+                lot = sym_info.volume_min
+                tick = mt5.symbol_info_tick(slave_sym)
+                if tick is None:
+                    self._log(f"⚠️ [{sname}] Нет тика для {slave_sym}, пробуем следующий")
+                    continue
 
-            price = normalize_price(tick.ask, sym_info.digits)
-            self._log(f"📤 [{sname}] Открываем BUY {slave_sym} lot={lot} price={price}")
-
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": slave_sym,
-                "volume": lot,
-                "type": mt5.ORDER_TYPE_BUY,
-                "price": price,
-                "comment": "CT_TEST",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling,
-            }
-
-            result = try_send_order(request, self._log)
-            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                retcode = result.retcode if result else -1
-                comment = result.comment if result else ""
+                filling = get_filling_mode(sym_info)
                 self._log(
-                    f"❌ [{sname}] Тест FAILED: retcode={retcode} {comment}"
+                    f"📊 [{sname}] {slave_sym} vol_min={lot} filling={filling} "
+                    f"filling_flags={sym_info.filling_mode} "
+                    f"tick_val={sym_info.trade_tick_value} "
+                    f"tick_sz={sym_info.trade_tick_size}"
                 )
+
+                price = normalize_price(tick.ask, sym_info.digits)
+                self._log(f"📤 [{sname}] Открываем BUY {slave_sym} lot={lot} price={price}")
+
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": slave_sym,
+                    "volume": lot,
+                    "type": mt5.ORDER_TYPE_BUY,
+                    "price": price,
+                    "comment": "CT_TEST",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": filling,
+                }
+
+                result = try_send_order(request, self._log)
+                if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                    retcode = result.retcode if result else -1
+                    comment = result.comment if result else ""
+                    self._log(
+                        f"❌ [{sname}] Тест FAILED: retcode={retcode} {comment}"
+                    )
+                    self._trade_event({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "slave": sname, "symbol": slave_sym,
+                        "direction": "BUY", "lot": lot,
+                        "master_ticket": "TEST", "slave_ticket": "—",
+                        "success": False, "status": f"❌ retcode={retcode} {comment}",
+                    })
+                    continue
+
+                ticket = result.order
+                self._log(f"✅ [{sname}] Тест BUY OK → #{ticket}, закрываем...")
                 self._trade_event({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "slave": sname, "symbol": slave_sym,
                     "direction": "BUY", "lot": lot,
-                    "master_ticket": "TEST", "slave_ticket": "—",
-                    "success": False, "status": f"❌ retcode={retcode} {comment}",
+                    "master_ticket": "TEST", "slave_ticket": str(ticket),
+                    "success": True, "status": f"✅ TEST BUY #{ticket}",
                 })
+
+                mt5.sleep(1000)
+
+                pos = None
+                all_pos = mt5.positions_get(symbol=slave_sym)
+                if all_pos:
+                    for p in all_pos:
+                        if p.comment == "CT_TEST":
+                            pos = p
+                            break
+                if pos is None:
+                    self._log(f"ℹ️ [{sname}] Позиция не найдена — возможно уже закрыта")
+                    return
+
+                close_type = opposite_order_type(pos.type)
+                close_tick = mt5.symbol_info_tick(pos.symbol)
+                if close_tick is None:
+                    self._log(f"⚠️ [{sname}] Нет тика для закрытия #{pos.ticket}")
+                    return
+                close_price = normalize_price(close_tick.bid, sym_info.digits)
+
+                close_req = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": pos.symbol,
+                    "volume": pos.volume,
+                    "type": close_type,
+                    "position": pos.ticket,
+                    "price": close_price,
+                    "comment": "CT_TEST_CLOSE",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": filling,
+                }
+                close_result = try_send_order(close_req, self._log)
+                if close_result and close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                    self._log(f"✅ [{sname}] Тест закрыт #{pos.ticket} — копирование работает!")
+                else:
+                    rc = close_result.retcode if close_result else -1
+                    cmt = close_result.comment if close_result else ""
+                    self._log(f"⚠️ [{sname}] BUY открыт, закрытие retcode={rc} {cmt} — закройте вручную #{pos.ticket}")
                 return
 
-            ticket = result.order
-            self._log(f"✅ [{sname}] Тест BUY OK → #{ticket}, закрываем...")
-            self._trade_event({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "slave": sname, "symbol": slave_sym,
-                "direction": "BUY", "lot": lot,
-                "master_ticket": "TEST", "slave_ticket": str(ticket),
-                "success": True, "status": f"✅ TEST BUY #{ticket}",
-            })
-
-            mt5.sleep(1000)
-
-            pos = None
-            all_pos = mt5.positions_get(symbol=slave_sym)
-            if all_pos:
-                for p in all_pos:
-                    if p.comment == "CT_TEST":
-                        pos = p
-                        break
-            if pos is None:
-                self._log(f"ℹ️ [{sname}] Позиция не найдена — возможно уже закрыта")
-                return
-
-            close_type = opposite_order_type(pos.type)
-            close_tick = mt5.symbol_info_tick(pos.symbol)
-            if close_tick is None:
-                self._log(f"⚠️ [{sname}] Нет тика для закрытия #{pos.ticket}")
-                return
-            close_price = normalize_price(close_tick.bid, sym_info.digits)
-
-            close_req = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": pos.symbol,
-                "volume": pos.volume,
-                "type": close_type,
-                "position": pos.ticket,
-                "price": close_price,
-                "comment": "CT_TEST_CLOSE",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling,
-            }
-            close_result = try_send_order(close_req, self._log)
-            if close_result and close_result.retcode == mt5.TRADE_RETCODE_DONE:
-                self._log(f"✅ [{sname}] Тест закрыт #{pos.ticket} — копирование работает!")
-            else:
-                rc = close_result.retcode if close_result else -1
-                cmt = close_result.comment if close_result else ""
-                self._log(f"⚠️ [{sname}] BUY открыт, закрытие retcode={rc} {cmt} — закройте вручную #{pos.ticket}")
+            self._log(f"❌ [{sname}] Ни один символ из маппинга не подошёл для теста")
         finally:
             mt5.shutdown()
 
@@ -508,7 +525,7 @@ class CopyTrader:
         self.log_cb(f"[{ts}] {msg}")
 
     def _status(self, terminal_id: str, status: str,
-                balance: float = 0, equity: float = 0):
+                 balance: float = 0, equity: float = 0):
         self.status_cb(terminal_id, status, balance, equity)
 
     def _trade_event(self, info: Dict):
@@ -531,24 +548,32 @@ class CopyTrader:
         except Exception:
             pass
 
+    # ── Инкремент дневного счётчика сделок ───────────────────
+
+    def _increment_daily_trade(self, sid: str):
+        today_str = date.today().isoformat()
+        daily: Dict = self.state.setdefault("daily_trades", {})
+        if daily.get("_date") != today_str:
+            daily.clear()
+            daily["_date"] = today_str
+        daily[sid] = daily.get(sid, 0) + 1
+
     # ── Основной цикл ────────────────────────────────────────
 
     def _run(self):
-        poll = self.config.get("poll_interval_seconds", 1)
         while not self._stop_event.is_set():
             try:
+                self._reload_config()
                 self._cycle()
             except Exception as e:
                 self._log(f"❌ Критическая ошибка цикла: {e}")
-            self._stop_event.wait(poll)
+            self._stop_event.wait(self.config.get("poll_interval_seconds", 1))
 
     def _cycle(self):
         if mt5 is None:
             self._log("❌ Библиотека MetaTrader5 не установлена")
             self._stop_event.wait(5)
             return
-
-        self._reload_config()
 
         master_cfg = self.config.get("master", {})
         master_path = master_cfg.get("path", "")
@@ -591,18 +616,17 @@ class CopyTrader:
             for slave in slaves:
                 sid = slave.get("name", slave.get("id", "?"))
                 if not slave.get("enabled", True):
-                    self._log(f"⏭️ [{sid}] Пропущен (отключён)")
                     continue
                 try:
-                    self._process_slave(slave, master_positions, master_orders)
+                    self._sync_slave(slave, master_positions, master_orders)
                 except Exception as e:
                     self._log(f"❌ [{sid}] Ошибка: {e}")
 
             save_state(self.state_file, self.state)
 
-    # ── Обработка одного слейва ──────────────────────────────
+    # ── Обработка одного слейва (подключение + проверки) ─────
 
-    def _process_slave(self, slave: Dict, master_positions, master_orders):
+    def _sync_slave(self, slave: Dict, master_positions, master_orders):
         sid = slave.get("id", "slave")
         sname = slave.get("name", sid)
         slave_path = slave.get("path", "")
@@ -610,26 +634,22 @@ class CopyTrader:
 
         if not slave_path:
             self._status(sname, "🔴 Путь не задан")
-            self._log(f"⚠️ [{sname}] Путь к терминалу не задан")
             return
 
         if not is_terminal_running(slave_path):
             self._status(sname, "🔴 Не запущен")
-            self._log(f"⚠️ [{sname}] Терминал не запущен: {slave_path}")
             return
 
         ok = mt5.initialize(path=slave_path)
         if not ok:
             err = mt5.last_error()
             self._status(sname, f"🔴 Ошибка ({err[0]})")
-            self._log(f"⚠️ [{sname}] MT5 initialize failed: {err}")
             return
 
         try:
             acc = mt5.account_info()
             if acc is None:
                 self._status(sname, "🔴 Нет аккаунта")
-                self._log(f"⚠️ [{sname}] account_info() вернул None")
                 return
 
             ti = mt5.terminal_info()
@@ -638,16 +658,16 @@ class CopyTrader:
                 self._log(f"⚠️ [{sname}] Включите Алготрейдинг (AutoTrading) в терминале!")
                 return
 
-            self._status(sname, f"🟢 #{acc.login} ${acc.balance:.2f}",
-                         acc.balance, acc.equity)
             balance = acc.balance
             equity = acc.equity
 
             # ── Защита по просадке ────────────────────────────────
             max_dd = slave.get("max_drawdown", 0)
+            dd_paused = False
             if max_dd > 0 and balance > 0:
                 dd_pct = (balance - equity) / balance * 100
                 if dd_pct >= max_dd:
+                    dd_paused = True
                     if not self._drawdown_paused.get(sid):
                         self._log(
                             f"🛑 [{sname}] Просадка {dd_pct:.1f}% >= {max_dd}% — "
@@ -655,7 +675,6 @@ class CopyTrader:
                         )
                         self._drawdown_paused[sid] = True
                     self._status(sname, f"🔴 #{acc.login} просадка {dd_pct:.1f}%")
-                    return
                 else:
                     if self._drawdown_paused.get(sid):
                         self._log(
@@ -663,6 +682,41 @@ class CopyTrader:
                             f"копирование возобновлено"
                         )
                         self._drawdown_paused[sid] = False
+
+            # ── Лимит сделок в день ───────────────────────────────
+            max_trades = slave.get("max_trades_per_day", 0)
+            trades_paused = False
+            if max_trades > 0:
+                today_str = date.today().isoformat()
+                daily: Dict = self.state.setdefault("daily_trades", {})
+                if daily.get("_date") != today_str:
+                    daily.clear()
+                    daily["_date"] = today_str
+                today_count = daily.get(sid, 0)
+                if today_count >= max_trades:
+                    trades_paused = True
+                    if not self._trades_paused.get(sid):
+                        self._log(
+                            f"🛑 [{sname}] Лимит сделок {today_count}/{max_trades} — "
+                            f"копирование приостановлено"
+                        )
+                        self._trades_paused[sid] = True
+                else:
+                    if self._trades_paused.get(sid):
+                        self._log(
+                            f"✅ [{sname}] Лимит сделок {today_count}/{max_trades} — "
+                            f"копирование возобновлено"
+                        )
+                        self._trades_paused[sid] = False
+
+            if dd_paused or trades_paused:
+                if not dd_paused:
+                    self._status(sname, f"🟢 #{acc.login} ${balance:.2f}",
+                                 balance, equity)
+                return
+
+            self._status(sname, f"🟢 #{acc.login} ${balance:.2f}",
+                         balance, equity)
 
             self._sync_positions(slave, sid, sname, symbol_map,
                                  master_positions, balance)
@@ -675,17 +729,13 @@ class CopyTrader:
 
     def _sync_positions(self, slave, sid, sname, symbol_map,
                         master_positions, balance):
-        # Позиции мастера по отслеживаемым символам
         master_pos_map = {
             str(p.ticket): p
             for p in master_positions
-            if p.symbol in symbol_map
+            if self._sym_lookup(symbol_map, p.symbol) is not None
         }
         master_tickets = set(master_pos_map.keys())
-        if master_pos_map:
-            self._log(f"🔍 [{sname}] Позиции мастера: {len(master_pos_map)} из {len(master_positions)} (по символам {list(symbol_map.keys())})")
 
-        # Состояние слейва
         state_pos: Dict = self.state["positions"]
 
         # Новые позиции (есть у мастера, нет в state для этого слейва)
@@ -695,15 +745,17 @@ class CopyTrader:
                 continue
             # Проверяем: не был ли это отложенный ордер
             if ticket_str in self.state["orders"]:
-                slave_symbol = symbol_map.get(pos.symbol, pos.symbol)
+                slave_symbol = self._sym_lookup(symbol_map, pos.symbol) or pos.symbol
                 slave_ticket = self._find_slave_position(
                     sname, slave_symbol, ticket_str)
                 if slave_ticket is None:
-                    slave_ticket = self.state["orders"][ticket_str].get(sid)
-                    if slave_ticket:
-                        slave_pos_list = mt5.positions_get(ticket=slave_ticket)
+                    slave_ticket_old = self.state["orders"][ticket_str].get(sid)
+                    if slave_ticket_old:
+                        slave_pos_list = mt5.positions_get(ticket=slave_ticket_old)
                         if not slave_pos_list:
-                            slave_ticket = None
+                            slave_ticket_old = None
+                        else:
+                            slave_ticket = slave_ticket_old
                 if slave_ticket:
                     if ticket_str not in state_pos:
                         state_pos[ticket_str] = {}
@@ -720,6 +772,7 @@ class CopyTrader:
                     if ticket_str not in state_pos:
                         state_pos[ticket_str] = {}
                     state_pos[ticket_str][sid] = slave_ticket
+                    self._increment_daily_trade(sid)
 
         # Закрытые позиции (есть в state, нет у мастера)
         closed = [t for t in list(state_pos.keys()) if t not in master_tickets]
@@ -744,7 +797,6 @@ class CopyTrader:
                 continue
             slave_pos = slave_positions[0]
 
-            slave_symbol = symbol_map.get(master_pos.symbol, master_pos.symbol)
             sym_info = mt5.symbol_info(slave_pos.symbol)
             if not sym_info:
                 continue
@@ -815,11 +867,11 @@ class CopyTrader:
         master_ord_map = {
             str(o.ticket): o
             for o in master_orders
-            if o.symbol in symbol_map and o.type in pending_types
+            if self._sym_lookup(symbol_map, o.symbol) is not None
+            and o.type in pending_types
         }
         master_ord_tickets = set(master_ord_map.keys())
 
-        # Тикеты позиций мастера (для определения сработавших ордеров)
         master_pos_tickets = {str(p.ticket) for p in master_positions}
 
         state_ord: Dict = self.state["orders"]
@@ -835,6 +887,7 @@ class CopyTrader:
                 if ticket_str not in state_ord:
                     state_ord[ticket_str] = {}
                 state_ord[ticket_str][sid] = slave_ticket
+                self._increment_daily_trade(sid)
 
         # Отменённые/сработавшие ордера
         gone = [t for t in list(state_ord.keys())
@@ -843,10 +896,8 @@ class CopyTrader:
             slave_ticket = state_ord[ticket_str].get(sid)
             if slave_ticket:
                 if ticket_str in master_pos_tickets:
-                    # Ордер сработал — обработается в sync_positions
-                    pass
+                    pass  # Ордер сработал — обработается в sync_positions
                 else:
-                    # Ордер отменён
                     self._cancel_order(sname, ticket_str, slave_ticket)
             if sid in state_ord.get(ticket_str, {}):
                 del state_ord[ticket_str][sid]
@@ -857,7 +908,6 @@ class CopyTrader:
 
     def _find_slave_position(self, sname: str, symbol: str,
                              master_ticket_str: str) -> Optional[int]:
-        """Ищет позицию на слейве по комментарию CT_{master_ticket}."""
         comment = f"CT_{master_ticket_str}"
         positions = mt5.positions_get(symbol=symbol)
         if positions:
@@ -870,7 +920,7 @@ class CopyTrader:
 
     def _open_position(self, slave, sid, sname, symbol_map,
                        master_pos, balance) -> Optional[int]:
-        raw_symbol = symbol_map.get(master_pos.symbol)
+        raw_symbol = self._sym_lookup(symbol_map, master_pos.symbol)
         if not raw_symbol:
             self._log(f"⚠️ [{sname}] Символ мастера {master_pos.symbol} не в маппинге")
             return None
@@ -893,6 +943,12 @@ class CopyTrader:
             self._log(f"⚠️ [{sname}] Символ {slave_symbol} не найден")
             return None
 
+        if sym_info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+            self._log(
+                f"⚠️ [{sname}] {slave_symbol} trade_mode={sym_info.trade_mode} — не торгуется"
+            )
+            return None
+
         # Расчёт лота
         if master_pos.sl != 0.0:
             sl_distance = abs(master_pos.price_open - master_pos.sl)
@@ -900,7 +956,7 @@ class CopyTrader:
             risk_value = slave.get("risk_value", 1.0)
             lot = calculate_lot(sym_info, sl_distance, risk_type, risk_value, balance)
             self._log(
-                f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{ '%' if risk_type == 'percent' else '$' } "
+                f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{'%' if risk_type == 'percent' else '$'} "
                 f"bal={balance:.2f} SL_dist={sl_distance:.5f} "
                 f"tick_val={sym_info.trade_tick_value} "
                 f"tick_val_loss={sym_info.trade_tick_value_loss} "
@@ -935,6 +991,7 @@ class CopyTrader:
         digits = sym_info.digits
         price = normalize_price(price, digits)
 
+        # SL/TP как процент от open price
         sl = 0.0
         tp = 0.0
         if master_pos.sl != 0.0:
@@ -1009,7 +1066,7 @@ class CopyTrader:
                         slave_ticket: int):
         positions = mt5.positions_get(ticket=slave_ticket)
         if not positions:
-            return  # уже закрыта
+            return
 
         pos = positions[0]
         tick = mt5.symbol_info_tick(pos.symbol)
@@ -1117,7 +1174,7 @@ class CopyTrader:
 
     def _place_order(self, slave, sid, sname, symbol_map,
                      master_order, balance) -> Optional[int]:
-        raw_symbol = symbol_map.get(master_order.symbol)
+        raw_symbol = self._sym_lookup(symbol_map, master_order.symbol)
         if not raw_symbol:
             self._log(f"⚠️ [{sname}] Символ мастера {master_order.symbol} не в маппинге")
             return None
@@ -1138,6 +1195,12 @@ class CopyTrader:
         sym_info = mt5.symbol_info(slave_symbol)
         if sym_info is None:
             self._log(f"⚠️ [{sname}] Символ {slave_symbol} не найден")
+            return None
+
+        if sym_info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+            self._log(
+                f"⚠️ [{sname}] {slave_symbol} trade_mode={sym_info.trade_mode} — не торгуется"
+            )
             return None
 
         # Расчёт лота

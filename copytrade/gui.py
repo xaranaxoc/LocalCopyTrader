@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import uuid
+import subprocess
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -40,34 +41,101 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
 STATE_FILE = os.path.join(APP_DATA_DIR, "state.json")
 LOGS_DIR = os.path.join(APP_DATA_DIR, "logs")
 
-BG = "#0F0F11"
-BG_ROW = "#16161A"
-BG_ROW_HOVER = "#1C1C22"
-BG_INPUT = "#1E1E24"
-FG = "#E0E0E0"
-FG_DIM = "#6B6B76"
-FG_LABEL = "#8B8B96"
-ACCENT = "#6C5CE7"
-ACCENT_H = "#7D6FF0"
-GREEN = "#00D68F"
-GREEN_DIM = "#00B377"
-RED = "#FF6B6B"
-RED_DIM = "#D44444"
-YELLOW = "#FFD93D"
-BORDER = "#2A2A32"
-DIVIDER = "#222228"
+# ── Цветовая палитра (neon cyan) ───────────────────────────
+BG_DEEP = "#080810"
+BG = "#0C0C14"
+BG_ROW = "#111119"
+BG_ROW_HOVER = "#171722"
+BG_INPUT = "#191924"
+BG_HEADER = "#0E0E18"
+FG = "#E4E4EE"
+FG_DIM = "#6A6A80"
+FG_LABEL = "#8888A0"
+FG_MUTED = "#3A3A50"
+ACCENT = "#00B4D8"
+ACCENT_H = "#00D0F0"
+ACCENT_DIM = "#006E88"
+CYAN_GLOW = "#002933"
+GREEN = "#00E676"
+GREEN_DIM = "#00B85E"
+GREEN_GLOW = "#003318"
+RED = "#FF3D57"
+RED_DIM = "#CC3044"
+RED_GLOW = "#330D14"
+YELLOW = "#FFB020"
+YELLOW_DIM = "#CC8D1A"
+BORDER = "#1C1C2C"
+BORDER_LIGHT = "#252538"
+DIVIDER = "#111120"
+
+# ── Шрифты ──────────────────────────────────────────────────
+FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_VAL = ("Segoe UI", 11)
+FONT_VAL_BOLD = ("Segoe UI", 11, "bold")
+FONT_MONO = ("Cascadia Mono", 9)
+FONT_MONO_SM = ("Cascadia Mono", 8)
 
 FONT = ("Segoe UI", 9)
 FONT_BOLD = ("Segoe UI", 9, "bold")
 FONT_SM = ("Segoe UI", 8)
 FONT_XS = ("Segoe UI", 7)
-FONT_MONO = ("Cascadia Mono", 8)
-FONT_MONO_SM = ("Cascadia Mono", 7)
-FONT_TITLE = ("Segoe UI", 14, "bold")
-FONT_VAL = ("Segoe UI", 10)
-FONT_VAL_BOLD = ("Segoe UI", 10, "bold")
 
-#  (col_index, header, min_width, weight, anchor)
+# ── Tooltip (info mode) ────────────────────────────────────
+
+class _Tip:
+    enabled = False
+    _active = None
+
+    @classmethod
+    def show(cls, widget, text):
+        cls.hide()
+        tw = tk.Toplevel(widget)
+        tw.wm_overrideredirect(True)
+        tw.configure(bg=ACCENT)
+        tw.wm_attributes("-topmost", True)
+        lbl = tk.Label(tw, text=text, bg=ACCENT, fg="white",
+                       font=("Segoe UI", 9), padx=8, pady=4)
+        lbl.pack()
+        tw.update_idletasks()
+        wx = widget.winfo_rootx() + widget.winfo_width() // 2 - tw.winfo_width() // 2
+        wy = widget.winfo_rooty() + widget.winfo_height() + 2
+        tw.wm_geometry(f"+{wx}+{wy}")
+        cls._active = tw
+
+    @classmethod
+    def hide(cls):
+        if cls._active:
+            try:
+                cls._active.destroy()
+            except Exception:
+                pass
+            cls._active = None
+
+
+def _bind_tip(widget, text):
+    widget.bind("<Enter>", lambda e: _Tip.show(widget, text) if _Tip.enabled else None)
+    widget.bind("<Leave>", lambda e: _Tip.hide())
+
+# ── Символы-алиасы ─────────────────────────────────────────
+
+_SYMBOL_ALIASES = {
+    "DE30": "DE40", "DE40": "DE30",
+    "DE35": "DE40", "UK100": "UK100USD",
+    "NAS100": "USTECH", "USTECH": "NAS100",
+    "US500": "US30", "SPX500": "US500",
+    "US30": "US30USD", "DJ30": "US30",
+    "XAUUSD": "GOLD", "GOLD": "XAUUSD",
+    "XAGUSD": "SILVER", "SILVER": "XAGUSD",
+    "WTI": "USOIL", "USOIL": "WTI",
+    "BRENT": "UKOIL", "UKOIL": "BRENT",
+    "BTCUSD": "BTCUSDT", "BTCUSDT": "BTCUSD",
+    "ETHUSD": "ETHUSDT", "ETHUSDT": "ETHUSD",
+    "EURUSD": "EURUSD.", "GBPUSD": "GBPUSD.",
+    "USDJPY": "USDJPY.", "AUDUSD": "AUDUSD.",
+}
+
+# ── COL_SPEC ────────────────────────────────────────────────
+# (col_index, header, min_width, weight, anchor)
 COL_SPEC = [
     (0, "ON", 36, 0, "center"),
     (1, "", 20, 0, "center"),
@@ -78,9 +146,12 @@ COL_SPEC = [
     (6, "P&L", 72, 0, "e"),
     (7, "СИМВОЛЫ", 100, 1, "w"),
     (8, "РИСК", 60, 0, "e"),
-    (9, "", 110, 0, "e"),
+    (9, "СДЕЛ/Д", 54, 0, "center"),
+    (10, "", 110, 0, "e"),
 ]
 
+
+# ── SymbolPickerDialog ──────────────────────────────────────
 
 class SymbolPickerDialog(tk.Toplevel):
     def __init__(self, parent, symbols: List[str], title_text: str = "Выбор символа"):
@@ -154,7 +225,11 @@ class SymbolPickerDialog(tk.Toplevel):
             self.destroy()
 
 
+# ── SlaveDialog ─────────────────────────────────────────────
+
 class SlaveDialog(tk.Toplevel):
+    _skip_suggest = True
+
     def __init__(self, parent, slave_data: Optional[Dict] = None):
         super().__init__(parent)
         self.result: Optional[Dict] = None
@@ -170,6 +245,8 @@ class SlaveDialog(tk.Toplevel):
         data = slave_data or {}
         self._build(data)
         self._center(parent)
+        self._load_symbols()
+        self._skip_suggest = False
 
     def _center(self, parent):
         self.update_idletasks()
@@ -217,7 +294,7 @@ class SlaveDialog(tk.Toplevel):
         sym_header = tk.Frame(self, bg=BG)
         sym_header.pack(fill="x", padx=12, pady=(2, 0))
         self._lbl(sym_header, "Символы (мастер \u2192 слейв)").pack(side="left")
-        self._btn(sym_header, "Загрузить", self._load_symbols, small=True).pack(side="right")
+        self._btn(sym_header, "\U0001F4E5 Обновить", self._load_symbols, small=True).pack(side="right")
 
         self.lbl_sym_status = tk.Label(self, text="", bg=BG, fg=FG_DIM, font=FONT_XS)
         self.lbl_sym_status.pack(anchor="w", padx=12)
@@ -233,7 +310,7 @@ class SlaveDialog(tk.Toplevel):
 
         tk.Frame(self, bg=DIVIDER, height=1).pack(fill="x", padx=12, pady=6)
 
-        # ── Риск (PositionSizer-стиль) ──────────────────────
+        # ── Риск ─────────────────────────────────────────────
         frm_risk = tk.Frame(self, bg=BG)
         frm_risk.pack(fill="x", padx=12, pady=2)
 
@@ -271,6 +348,12 @@ class SlaveDialog(tk.Toplevel):
         self._ent(frm_risk, self.var_max_drawdown, 8).grid(row=4, column=1, sticky="w", padx=(6, 0), pady=2)
         tk.Label(frm_risk, text="0 = выкл", bg=BG, fg=FG_DIM, font=FONT_XS).grid(
             row=5, column=1, sticky="w", padx=(6, 0))
+
+        self._lbl(frm_risk, "Макс. сделок/день").grid(row=6, column=0, sticky="w", pady=2)
+        self.var_max_trades = tk.StringVar(value=str(data.get("max_trades_per_day", 0)))
+        self._ent(frm_risk, self.var_max_trades, 8).grid(row=6, column=1, sticky="w", padx=(6, 0), pady=2)
+        tk.Label(frm_risk, text="0 = выкл", bg=BG, fg=FG_DIM, font=FONT_XS).grid(
+            row=7, column=1, sticky="w", padx=(6, 0))
 
         tk.Frame(self, bg=DIVIDER, height=1).pack(fill="x", padx=12, pady=6)
 
@@ -360,12 +443,62 @@ class SlaveDialog(tk.Toplevel):
         finally:
             mt5.shutdown()
 
+    def _auto_suggest(self, var_master: tk.StringVar, var_slave: tk.StringVar):
+        if self._skip_suggest:
+            return
+        m = var_master.get().strip().upper()
+        if not m:
+            return
+        s = var_slave.get().strip()
+        if s:
+            return
+        match = self._auto_match(m)
+        if match:
+            var_slave.set(match)
+
+    def _auto_match(self, master_sym: str) -> str:
+        master_upper = master_sym.upper()
+        # 1. Точное совпадение
+        for s in self._slave_symbols:
+            if s.upper() == master_upper:
+                return s
+        # 2. Базовое совпадение (без суффиксов . / _xxx)
+        base = master_upper.rstrip(".")
+        for suffix in ("USD", "EUR", "JPY", "GBP", "AUD", "CAD", "CHF", "NZD"):
+            if base.endswith(suffix):
+                base_core = base[:-len(suffix)]
+                break
+        else:
+            base_core = base
+        for s in self._slave_symbols:
+            s_upper = s.upper().rstrip(".")
+            if s_upper == base or s_upper == base_core:
+                return s
+        # 3. Алиас
+        alias = _SYMBOL_ALIASES.get(master_upper)
+        if alias:
+            alias_upper = alias.upper()
+            for s in self._slave_symbols:
+                if s.upper() == alias_upper:
+                    return s
+            for s in self._slave_symbols:
+                s_upper = s.upper().rstrip(".")
+                if s_upper == alias_upper.rstrip("."):
+                    return s
+        # 4. Префикс
+        for s in self._slave_symbols:
+            if s.upper().startswith(master_upper[:3]):
+                return s
+        return ""
+
     def _add_symbol_row(self, master_sym: str = "", slave_sym: str = ""):
         row_frame = tk.Frame(self.sym_frame, bg=BG)
         row_frame.pack(fill="x", pady=1)
         var_master = tk.StringVar(value=master_sym)
         var_slave = tk.StringVar(value=slave_sym)
         self._ent(row_frame, var_master, 8).pack(side="left")
+
+        var_master.trace_add("write", lambda *_: self._auto_suggest(var_master, var_slave))
 
         def pick_m():
             dlg = SymbolPickerDialog(self, self._master_symbols, "Мастер")
@@ -427,14 +560,21 @@ class SlaveDialog(tk.Toplevel):
             max_drawdown = float(self.var_max_drawdown.get())
         except ValueError:
             max_drawdown = 0.0
+        try:
+            max_trades_per_day = int(self.var_max_trades.get())
+        except ValueError:
+            max_trades_per_day = 0
 
         self.result = {
             "name": name, "path": path, "symbol_map": symbol_map,
             "risk_type": risk_type, "risk_value": risk_value,
             "default_lot": default_lot, "max_drawdown": max_drawdown,
+            "max_trades_per_day": max_trades_per_day,
         }
         self.destroy()
 
+
+# ── AccountRow ──────────────────────────────────────────────
 
 class AccountRow:
     def __init__(self, parent, row_index, slave_data, on_edit, on_delete, on_toggle, on_test, on_open, on_close_all):
@@ -472,9 +612,13 @@ class AccountRow:
         bg = BG_ROW
         r = self._row
 
-        self._bg_frame = tk.Frame(self._parent, bg=bg)
-        self._bg_frame.grid(row=r, column=0, columnspan=10, sticky="nsew", pady=1)
+        self._bg_frame = tk.Frame(self._parent, bg=bg, highlightbackground=BORDER,
+                                   highlightthickness=1 if not self._hover else 1)
+        self._bg_frame.grid(row=r, column=0, columnspan=11, sticky="nsew", pady=1)
         self._bg_frame.lower()
+
+        self._accent_strip = tk.Frame(self._bg_frame, bg=FG_DIM, width=3)
+        self._accent_strip.place(x=0, y=0, relheight=1.0)
 
         enabled = d.get("enabled", True)
         self.var_enabled = tk.BooleanVar(value=enabled)
@@ -485,9 +629,13 @@ class AccountRow:
         self.lbl_check.bind("<Button-1>", lambda e: self._toggle())
         self._widgets.append(self.lbl_check)
 
-        self.lbl_dot = tk.Label(self._parent, text="\u25CF", bg=bg, fg=FG_DIM, font=FONT)
-        self.lbl_dot.grid(row=r, column=1, padx=2, sticky="w")
-        self._widgets.append(self.lbl_dot)
+        dot_frame = tk.Frame(self._parent, bg=bg, width=20, height=20)
+        dot_frame.grid(row=r, column=1, padx=2, sticky="")
+        self._dot_canvas = tk.Canvas(dot_frame, width=14, height=14, bg=bg,
+                                      highlightthickness=0, bd=0)
+        self._dot_canvas.pack(padx=2, pady=2)
+        self._dot_oval = self._dot_canvas.create_oval(3, 3, 11, 11, fill=FG_DIM, outline="")
+        self._widgets.append(dot_frame)
 
         self.lbl_name = tk.Label(self._parent, text=d.get("name", "\u2014"), bg=bg, fg=FG,
                                   font=FONT_BOLD, anchor="w")
@@ -531,28 +679,50 @@ class AccountRow:
         self.lbl_risk.grid(row=r, column=8, padx=4, sticky="ew")
         self._widgets.append(self.lbl_risk)
 
+        mtd = d.get("max_trades_per_day", 0)
+        self.lbl_trades_day = tk.Label(self._parent, text=str(mtd) if mtd else "\u2014",
+                                        bg=bg, fg=FG_DIM, font=FONT_SM, anchor="center")
+        self.lbl_trades_day.grid(row=r, column=9, padx=4, sticky="ew")
+        self._widgets.append(self.lbl_trades_day)
+
         bf = tk.Frame(self._parent, bg=bg)
-        bf.grid(row=r, column=9, padx=(2, 6), sticky="e")
-        tk.Button(bf, text="\U0001F4C8", command=self._open_terminal,
+        bf.grid(row=r, column=10, padx=(2, 6), sticky="e")
+
+        btn_open = tk.Button(bf, text="\U0001F4C8", command=self._open_terminal,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-        tk.Button(bf, text="\u2716", command=self._close_all,
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_open.pack(side="left", padx=1)
+        _bind_tip(btn_open, "Открыть терминал")
+
+        btn_close = tk.Button(bf, text="\u2716", command=self._close_all,
                   bg=bg, fg=RED_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=RED,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-        tk.Button(bf, text="\u26A0", command=self._test,
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_close.pack(side="left", padx=1)
+        _bind_tip(btn_close, "Закрыть все позиции")
+
+        btn_test = tk.Button(bf, text="\u26A0", command=self._test,
                   bg=bg, fg=YELLOW, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=YELLOW,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-        tk.Button(bf, text="\u270E", command=self._edit,
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_test.pack(side="left", padx=1)
+        _bind_tip(btn_test, "Тест копирования")
+
+        btn_edit = tk.Button(bf, text="\u2699", command=self._edit,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
-        tk.Button(bf, text="\u2715", command=self._delete,
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_edit.pack(side="left", padx=1)
+        _bind_tip(btn_edit, "Настройки")
+
+        btn_del = tk.Button(bf, text="\u2715", command=self._delete,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=RED,
-                  cursor="hand2", width=2, highlightthickness=0).pack(side="left", padx=1)
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_del.pack(side="left", padx=1)
+        _bind_tip(btn_del, "Удалить аккаунт")
+
         self._widgets.append(bf)
 
         for w in self._widgets:
@@ -571,17 +741,35 @@ class AccountRow:
         self._leave_timer = None
         self._set_hover(False)
 
+    def _dot_color(self):
+        try:
+            return self._dot_canvas.itemcget(self._dot_oval, "fill")
+        except Exception:
+            return FG_DIM
+
     def _set_hover(self, hover: bool):
         self._hover = hover
         bg = self._cur_bg()
         if hasattr(self, '_bg_frame') and self._bg_frame:
-            self._bg_frame.configure(bg=bg)
+            if hover:
+                self._bg_frame.configure(bg=bg, highlightbackground=ACCENT,
+                                          highlightthickness=1)
+            else:
+                self._bg_frame.configure(bg=bg, highlightbackground=BORDER,
+                                          highlightthickness=1)
+        if hasattr(self, '_accent_strip') and self._accent_strip:
+            if hover:
+                self._accent_strip.configure(bg=self._dot_color())
+            else:
+                self._accent_strip.configure(bg=FG_DIM)
         for w in self._widgets:
             self._recolor(w, bg)
 
     def _recolor(self, w, bg):
         try:
-            if isinstance(w, tk.Label):
+            if isinstance(w, tk.Canvas):
+                w.configure(bg=bg)
+            elif isinstance(w, tk.Label):
                 w.configure(bg=bg)
             elif isinstance(w, tk.Frame):
                 w.configure(bg=bg)
@@ -607,12 +795,14 @@ class AccountRow:
 
         if status:
             dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
-            self.lbl_dot.config(fg=dot_color, bg=bg)
+            self._dot_canvas.itemconfigure(self._dot_oval, fill=dot_color)
+            self._dot_canvas.configure(bg=bg)
 
     def update_status_only(self, status: str, balance: float = 0, equity: float = 0):
         bg = self._cur_bg()
         dot_color = GREEN if "\U0001F7E2" in status else RED if "\U0001F534" in status else YELLOW if "\U0001F7E1" in status else FG_DIM
-        self.lbl_dot.config(fg=dot_color, bg=bg)
+        self._dot_canvas.itemconfigure(self._dot_oval, fill=dot_color)
+        self._dot_canvas.configure(bg=bg)
         if balance > 0:
             self.lbl_balance.config(text=f"${balance:,.2f}", bg=bg)
         if equity > 0:
@@ -677,6 +867,8 @@ class AccountRow:
         self._build()
 
 
+# ── TradesTable ─────────────────────────────────────────────
+
 class TradesTable(tk.Frame):
     COLS = ["time", "slave", "symbol", "dir", "lot", "master", "slave_tk", "status"]
     HEADERS = ["Время", "Слейв", "Символ", "\u2191\u2193", "Лот", "Мастер #", "Слейв #", "Статус"]
@@ -712,28 +904,35 @@ class TradesTable(tk.Frame):
         self.tree.tag_configure("ok", foreground=GREEN)
         self.tree.tag_configure("err", foreground=RED)
         self.tree.tag_configure("warn", foreground=YELLOW)
+        self.tree.tag_configure("even", background=BG_ROW)
+        self.tree.tag_configure("odd", background=BG_DEEP)
 
     def add_trade(self, time_str: str, slave: str, symbol: str,
                   direction: str, lot: float, master_ticket: str,
                   slave_ticket: str, status: str, tag: str = "ok"):
+        children = self.tree.get_children()
+        row_idx = len(children)
+        row_tag = "even" if row_idx % 2 == 0 else "odd"
         self.tree.insert("", 0, values=(
             time_str, slave, symbol, direction,
             f"{lot:.2f}", master_ticket, slave_ticket, status
-        ), tags=(tag,))
+        ), tags=(tag, row_tag))
         children = self.tree.get_children()
         while len(children) > self._max_rows:
             self.tree.delete(children[-1])
             children = self.tree.get_children()
 
 
+# ── App ─────────────────────────────────────────────────────
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MT5 Copy Trader")
-        self.configure(bg=BG)
+        self.configure(bg=BG_DEEP)
         self.resizable(True, True)
-        self.minsize(980, 680)
-        self.geometry("1020x720")
+        self.minsize(1100, 720)
+        self.geometry("1140x760")
 
         self._slaves: List[Dict] = []
         self._rows: List[AccountRow] = []
@@ -760,89 +959,147 @@ class App(tk.Tk):
                          cursor="hand2", padx=10, pady=3, highlightthickness=0, bd=0)
 
     def _build_ui(self):
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=14, pady=(10, 0))
-        tk.Label(hdr, text="Copy Trader", bg=BG, fg=FG, font=FONT_TITLE).pack(side="left")
+        # ── Header bar ───────────────────────────────────────
+        hdr = tk.Frame(self, bg=BG_HEADER)
+        hdr.pack(fill="x", padx=0, pady=0)
 
-        btn_area = tk.Frame(hdr, bg=BG)
-        btn_area.pack(side="right")
+        hdr_left = tk.Frame(hdr, bg=BG_HEADER)
+        hdr_left.pack(side="left", padx=14, pady=(10, 8))
 
-        self.btn_start = self._make_btn(btn_area, "\u25B6  Старт", self._start, accent=True)
+        tk.Label(hdr_left, text="COPY TRADER", bg=BG_HEADER, fg=FG,
+                 font=FONT_TITLE).pack(side="left")
+        tk.Label(hdr_left, text="  MT5", bg=BG_HEADER, fg=ACCENT,
+                 font=("Segoe UI", 12)).pack(side="left", anchor="s")
+
+        hdr_right = tk.Frame(hdr, bg=BG_HEADER)
+        hdr_right.pack(side="right", padx=14, pady=(10, 8))
+
+        self.btn_info = tk.Button(hdr_right, text="\u2139\uFE0F", command=self._toggle_info,
+                                   bg=BG_INPUT, fg=FG_DIM, relief="flat", font=FONT_BOLD,
+                                   activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
+                                   cursor="hand2", padx=6, pady=2, highlightthickness=0)
+        self.btn_info.pack(side="right", padx=(8, 0))
+        _bind_tip(self.btn_info, "Режим подсказок")
+
+        block_term = tk.Frame(hdr_right, bg=BG_HEADER)
+        block_term.pack(side="right", padx=(12, 0))
+        self._make_btn(block_term, "\u25B6 Запуск", self._launch_all, accent=True).pack(side="left", padx=2)
+        self._make_btn(block_term, "\u25A0 Выключить", self._shutdown_all, danger=True).pack(side="left", padx=2)
+        tk.Label(block_term, text="ТЕРМИНАЛЫ", bg=BG_HEADER, fg=FG_DIM,
+                 font=FONT_XS).pack(side="left", padx=(4, 0))
+
+        block_ct = tk.Frame(hdr_right, bg=BG_HEADER)
+        block_ct.pack(side="right", padx=(12, 0))
+        self.btn_start = self._make_btn(block_ct, "\u25B6  Старт", self._start, accent=True)
         self.btn_start.pack(side="left", padx=2)
-        self.btn_stop = self._make_btn(btn_area, "\u25A0  Стоп", self._stop, danger=True)
+        self.btn_stop = self._make_btn(block_ct, "\u25A0  Стоп", self._stop, danger=True)
         self.btn_stop.pack(side="left", padx=2)
         self.btn_stop.config(state="disabled")
+        tk.Label(block_ct, text="КОПИТРЕЙДЕР", bg=BG_HEADER, fg=FG_DIM,
+                 font=FONT_XS).pack(side="left", padx=(4, 0))
 
-        self._make_btn(btn_area, "\u2716 Закрыть все сделки", self._close_all_open, danger=True).pack(side="left", padx=2)
+        # ── Мастер ──────────────────────────────────────────
+        tk.Frame(self, bg=DIVIDER, height=1).pack(fill="x", padx=14, pady=(6, 0))
 
-        self._make_btn(btn_area, "\u25B6 Запуск всех", self._launch_all).pack(side="left", padx=2)
+        master_outer = tk.Frame(self, bg=BG_ROW, highlightbackground=BORDER,
+                                 highlightthickness=1)
+        master_outer.pack(fill="x", padx=14, pady=1)
 
-        # ── Мастер ───────────────────────────────────────────
-        tk.Frame(self, bg=DIVIDER, height=1).pack(fill="x", padx=14, pady=(8, 0))
+        master_strip = tk.Frame(master_outer, bg=ACCENT, width=3)
+        master_strip.place(x=0, y=0, relheight=1.0)
 
-        master_f = tk.Frame(self, bg=BG_ROW)
-        master_f.pack(fill="x", padx=14, pady=1)
+        master_f = tk.Frame(master_outer, bg=BG_ROW)
+        master_f.pack(fill="x", padx=(6, 8), pady=6)
 
-        tk.Label(master_f, text="\u25CF", bg=BG_ROW, fg=ACCENT, font=FONT).grid(row=0, column=0, padx=(8, 2))
-        tk.Label(master_f, text="МАСТЕР", bg=BG_ROW, fg=ACCENT, font=FONT_BOLD).grid(row=0, column=1, padx=4)
+        tk.Label(master_f, text="МАСТЕР", bg=BG_ROW, fg=ACCENT, font=FONT_BOLD).grid(row=0, column=0, padx=(4, 8))
 
         self.var_master_path = tk.StringVar()
         tk.Entry(master_f, textvariable=self.var_master_path, width=36,
                  bg=BG_INPUT, fg=FG, insertbackground=FG, relief="flat",
                  font=FONT_SM, highlightthickness=1,
-                 highlightbackground=BORDER, highlightcolor=ACCENT).grid(row=0, column=2, padx=4, sticky="ew")
-        self._make_btn(master_f, "...", self._browse_master).grid(row=0, column=3, padx=2)
-        tk.Button(master_f, text="\U0001F4C8", command=self._open_master_terminal,
-                  bg=BG_ROW, fg=FG_DIM, relief="flat", font=FONT_SM,
-                  activebackground=BG_ROW_HOVER, activeforeground=ACCENT,
-                  cursor="hand2", width=2, highlightthickness=0).grid(row=0, column=4, padx=(8, 2))
-        tk.Button(master_f, text="\u2716", command=self._close_all_master,
+                 highlightbackground=BORDER, highlightcolor=ACCENT).grid(row=0, column=1, padx=4, sticky="ew")
+        self._make_btn(master_f, "...", self._browse_master).grid(row=0, column=2, padx=2)
+
+        self._make_btn(master_f, "\u25B6 Открыть", self._open_master_terminal, accent=True).grid(row=0, column=3, padx=(8, 4))
+
+        btn_close_master = tk.Button(master_f, text="\u2716", command=self._close_all_master,
                   bg=BG_ROW, fg=RED_DIM, relief="flat", font=FONT_SM,
                   activebackground=BG_ROW_HOVER, activeforeground=RED,
-                  cursor="hand2", width=2, highlightthickness=0).grid(row=0, column=5, padx=2)
+                  cursor="hand2", width=2, highlightthickness=0)
+        btn_close_master.grid(row=0, column=4, padx=2)
+        _bind_tip(btn_close_master, "Закрыть все позиции мастера")
 
         self.lbl_master_login = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                           font=FONT_MONO_SM, anchor="w")
-        self.lbl_master_login.grid(row=0, column=6, padx=6, sticky="ew")
+        self.lbl_master_login.grid(row=0, column=5, padx=6, sticky="ew")
 
         self.lbl_master_bal = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG,
                                         font=FONT_VAL_BOLD, anchor="e")
-        self.lbl_master_bal.grid(row=0, column=7, padx=4, sticky="ew")
+        self.lbl_master_bal.grid(row=0, column=6, padx=4, sticky="ew")
 
         self.lbl_master_eq = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                        font=FONT_MONO_SM, anchor="e")
-        self.lbl_master_eq.grid(row=0, column=8, padx=4, sticky="ew")
+        self.lbl_master_eq.grid(row=0, column=7, padx=4, sticky="ew")
 
         self.lbl_master_pnl = tk.Label(master_f, text="\u2014", bg=BG_ROW, fg=FG_DIM,
                                         font=FONT_VAL, anchor="e")
-        self.lbl_master_pnl.grid(row=0, column=9, padx=4, sticky="ew")
+        self.lbl_master_pnl.grid(row=0, column=8, padx=4, sticky="ew")
 
-        master_f.columnconfigure(2, weight=1)
+        master_f.columnconfigure(1, weight=1)
 
-        # ── Таблица аккаунтов ────────────────────────────────────
-        self._table_frame = tk.Frame(self, bg=BG)
+        # ── Dashboard KPI ───────────────────────────────────
+        dash = tk.Frame(self, bg=BG_DEEP)
+        dash.pack(fill="x", padx=14, pady=6)
+
+        cards_data = [
+            ("kpi_bal", "Master Balance", "\u2014", FG),
+            ("kpi_eq", "Total Equity", "\u2014", FG),
+            ("kpi_pnl", "Net P&L", "\u2014", FG_DIM),
+            ("kpi_conn", "Connected", "\u2014", FG_DIM),
+        ]
+        self._kpi_labels: Dict[str, tk.Label] = {}
+        for i, (key, title, default, color) in enumerate(cards_data):
+            card = tk.Frame(dash, bg=BG_ROW, highlightbackground=BORDER,
+                            highlightthickness=1, padx=12, pady=6)
+            card.pack(side="left", fill="x", expand=True, padx=(0 if i == 0 else 4, 0))
+            tk.Label(card, text=title, bg=BG_ROW, fg=FG_DIM, font=FONT_XS).pack(anchor="w")
+            lbl = tk.Label(card, text=default, bg=BG_ROW, fg=color, font=FONT_VAL_BOLD)
+            lbl.pack(anchor="w")
+            self._kpi_labels[key] = lbl
+
+        self._refresh_dashboard()
+
+        # ── Таблица аккаунтов ────────────────────────────────
+        tbl_header = tk.Frame(self, bg=BG_DEEP)
+        tbl_header.pack(fill="x", padx=14, pady=(4, 0))
+        tk.Label(tbl_header, text="SLAVE ACCOUNTS", bg=BG_DEEP, fg=FG_DIM,
+                 font=FONT_BOLD).pack(side="left")
+
+        self._table_frame = tk.Frame(self, bg=BG_DEEP)
         self._table_frame.pack(fill="both", expand=True, padx=14, pady=2)
 
         for idx, _, min_w, weight, _ in COL_SPEC:
             self._table_frame.columnconfigure(idx, minsize=min_w, weight=weight)
 
         for idx, text, _, _, anchor in COL_SPEC:
-            tk.Label(self._table_frame, text=text, bg=BG, fg=FG_DIM,
-                     font=FONT_XS, anchor=anchor).grid(row=0, column=idx, padx=2, pady=(2, 0), sticky="ew")
-        self._make_btn(self._table_frame, "+ Аккаунт", self._add_slave,
-                       accent=True).grid(row=0, column=9, sticky="e", padx=2, pady=(2, 0))
+            lbl_h = tk.Label(self._table_frame, text=text, bg=BG_DEEP, fg=FG_DIM,
+                     font=FONT_XS, anchor=anchor)
+            lbl_h.grid(row=0, column=idx, padx=2, pady=(2, 0), sticky="ew")
+
+        self.tbl_btns = tk.Frame(self._table_frame, bg=BG_DEEP)
+        self.tbl_btns.grid(row=0, column=10, sticky="ew", padx=2, pady=(2, 0))
+
+        self._make_btn(self.tbl_btns, "+ Аккаунт", self._add_slave,
+                       accent=True).pack(side="left")
+        self._make_btn(self.tbl_btns, "\u2716 Закрыть сделки", self._close_all_open,
+                       danger=True).pack(side="right", padx=6)
+
         self._next_row = 1
 
-        # Статистика
-        stats_f = tk.Frame(self, bg=BG)
-        stats_f.pack(fill="x", padx=14, pady=(2, 0))
-        self.lbl_stats = tk.Label(stats_f, text="", bg=BG, fg=FG_DIM, font=FONT_SM)
-        self.lbl_stats.pack(side="left")
-
-        # Вкладки
+        # ── Notebook ────────────────────────────────────────
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook", background=BG_DEEP, borderwidth=0)
         style.configure("TNotebook.Tab", background=BG_INPUT, foreground=FG_DIM,
                         padding=[12, 3], font=FONT_SM, borderwidth=0)
         style.map("TNotebook.Tab", background=[("selected", BG_ROW)],
@@ -873,6 +1130,22 @@ class App(tk.Tk):
         self.log_text.tag_config("err", foreground=RED)
         self.log_text.tag_config("warn", foreground=YELLOW)
         self.log_text.tag_config("info", foreground=FG_DIM)
+
+        # Статистика
+        stats_f = tk.Frame(self, bg=BG_DEEP)
+        stats_f.pack(fill="x", padx=14, pady=(0, 2))
+        self.lbl_stats = tk.Label(stats_f, text="", bg=BG_DEEP, fg=FG_DIM, font=FONT_SM)
+        self.lbl_stats.pack(side="left")
+
+    # ── Info toggle ─────────────────────────────────────────
+
+    def _toggle_info(self):
+        _Tip.enabled = not _Tip.enabled
+        if _Tip.enabled:
+            self.btn_info.configure(bg=ACCENT, fg="white")
+        else:
+            self.btn_info.configure(bg=BG_INPUT, fg=FG_DIM)
+            _Tip.hide()
 
     # ── Мастер ──────────────────────────────────────────────
 
@@ -913,15 +1186,22 @@ class App(tk.Tk):
         self._close_all_master()
         for s in self._slaves:
             if s.get("enabled", True) and s.get("path"):
-                if _COPIER_OK:
-                    cfg = self._build_config()
-                    trader = CopyTrader(
-                        config=cfg, state_file=STATE_FILE,
-                        log_callback=self._on_log,
-                        status_callback=self._on_status,
-                        config_file=CONFIG_FILE,
-                    )
-                    trader.close_all_positions(s["path"], s.get("name", "?"))
+                self._close_all_slave(s)
+
+    def _close_all_slave(self, data: Dict):
+        if not _COPIER_OK:
+            self._log("\u274C copier.py не найден", "err")
+            return
+        sname = data.get("name", "?")
+        self._log(f"\u2716 Закрытие всех позиций [{sname}]...", "warn")
+        cfg = self._build_config()
+        trader = CopyTrader(
+            config=cfg, state_file=STATE_FILE,
+            log_callback=self._on_log,
+            status_callback=self._on_status,
+            config_file=CONFIG_FILE,
+        )
+        trader.close_all_positions(data.get("path", ""), sname)
 
     # ── Слейвы ──────────────────────────────────────────────
 
@@ -932,6 +1212,8 @@ class App(tk.Tk):
             data = dlg.result
             data["id"] = str(uuid.uuid4())[:8]
             data["enabled"] = True
+            if "max_trades_per_day" not in data:
+                data["max_trades_per_day"] = 0
             self._slaves.append(data)
             self._add_slave_row(data)
             self._save_config()
@@ -1015,22 +1297,7 @@ class App(tk.Tk):
             else:
                 self._log("\u26A0\uFE0F Не удалось найти окно терминала", "warn")
 
-    def _close_all_slave(self, data: Dict):
-        if not _COPIER_OK:
-            self._log("\u274C copier.py не найден", "err")
-            return
-        sname = data.get("name", "?")
-        self._log(f"\u2716 Закрытие всех позиций [{sname}]...", "warn")
-        cfg = self._build_config()
-        trader = CopyTrader(
-            config=cfg, state_file=STATE_FILE,
-            log_callback=self._on_log,
-            status_callback=self._on_status,
-            config_file=CONFIG_FILE,
-        )
-        trader.close_all_positions(data.get("path", ""), sname)
-
-    # ── Запуск всех терминалов ──────────────────────────────
+    # ── Запуск/остановка терминалов ─────────────────────────
 
     def _launch_all(self):
         paths = []
@@ -1038,6 +1305,8 @@ class App(tk.Tk):
         if master_path:
             paths.append(master_path)
         for s in self._slaves:
+            if not s.get("enabled", True):
+                continue
             p = s.get("path", "")
             if p and p not in paths:
                 paths.append(p)
@@ -1045,7 +1314,10 @@ class App(tk.Tk):
         for p in paths:
             if not is_terminal_running(p):
                 try:
-                    os.startfile(p)
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags = subprocess.STARTF_USESHOWWINDOW
+                    si.wShowWindow = 6  # SW_MINIMIZE
+                    subprocess.Popen([p], startupinfo=si)
                     launched += 1
                     self._log(f"\U0001F680 Запуск: {os.path.basename(os.path.dirname(p))}")
                 except Exception as e:
@@ -1057,6 +1329,37 @@ class App(tk.Tk):
         else:
             self._log("Все терминалы уже запущены")
 
+    def _shutdown_all(self):
+        if not _PSUTIL_OK:
+            self._log("\u274C psutil не установлен", "err")
+            return
+        paths = []
+        master_path = self.var_master_path.get().strip()
+        if master_path:
+            paths.append(master_path)
+        for s in self._slaves:
+            if not s.get("enabled", True):
+                continue
+            p = s.get("path", "")
+            if p and p not in paths:
+                paths.append(p)
+        killed = 0
+        for p in paths:
+            norm = os.path.normcase(os.path.abspath(p))
+            for proc in psutil.process_iter(['exe', 'pid']):
+                try:
+                    exe = proc.info.get('exe')
+                    if exe and os.path.normcase(exe) == norm:
+                        proc.terminate()
+                        killed += 1
+                        self._log(f"\u25A0 Завершён: {os.path.basename(os.path.dirname(p))}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        if killed > 0:
+            self._log(f"\u25A0 Завершено {killed} процессов", "warn")
+        else:
+            self._log("Нет запущенных терминалов")
+
     # ── Проверка связи / Старт / Стоп ───────────────────────
 
     def _schedule_check(self):
@@ -1066,6 +1369,7 @@ class App(tk.Tk):
             self._update_master_info_silent()
             for row, slave in zip(self._rows, self._slaves):
                 self._update_row_info_silent(row, slave)
+            self._refresh_dashboard()
             self._check_timer = self.after(3000, self._schedule_check)
 
     def _update_master_info_silent(self):
@@ -1128,6 +1432,43 @@ class App(tk.Tk):
                 mt5.shutdown()
         else:
             row.update_info(0, 0, status="\U0001F534 ошибка")
+
+    def _refresh_dashboard(self):
+        try:
+            bal_text = self.lbl_master_bal.cget("text")
+            bal = float(bal_text.replace("$", "").replace(",", "")) if bal_text and bal_text != "\u2014" else 0
+        except Exception:
+            bal = 0
+        self._kpi_labels["kpi_bal"].config(text=f"${bal:,.2f}" if bal > 0 else "\u2014")
+
+        total_eq = bal
+        for row in self._rows:
+            try:
+                eq_text = row.lbl_equity.cget("text")
+                eq = float(eq_text.replace("$", "").replace(",", "")) if eq_text and eq_text != "\u2014" else 0
+                if eq > 0:
+                    total_eq += eq
+            except Exception:
+                pass
+        self._kpi_labels["kpi_eq"].config(text=f"${total_eq:,.2f}" if total_eq > 0 else "\u2014")
+
+        net_pnl = 0.0
+        for row in self._rows:
+            try:
+                pnl_text = row.lbl_pnl.cget("text")
+                pnl_text = pnl_text.replace("$", "").replace(",", "").replace("+", "")
+                pnl = float(pnl_text) if pnl_text and pnl_text != "\u2014" else 0
+                net_pnl += pnl
+            except Exception:
+                pass
+        pnl_color = GREEN if net_pnl >= 0 else RED
+        pnl_sign = "+" if net_pnl >= 0 else ""
+        self._kpi_labels["kpi_pnl"].config(text=f"{pnl_sign}${net_pnl:,.2f}" if net_pnl != 0 else "\u2014",
+                                            fg=pnl_color if net_pnl != 0 else FG_DIM)
+
+        connected = sum(1 for row in self._rows if row.var_enabled.get())
+        total = len(self._rows)
+        self._kpi_labels["kpi_conn"].config(text=f"{connected}/{total}")
 
     def _start(self):
         master_path = self.var_master_path.get().strip()
@@ -1259,6 +1600,7 @@ class App(tk.Tk):
                     "risk_value": s.get("risk_value", 1.0),
                     "default_lot": s.get("default_lot", 0.01),
                     "max_drawdown": s.get("max_drawdown", 0),
+                    "max_trades_per_day": s.get("max_trades_per_day", 0),
                 }
                 for s in self._slaves
             ],
@@ -1289,6 +1631,8 @@ class App(tk.Tk):
                 s["id"] = str(uuid.uuid4())[:8]
             if "max_drawdown" not in s:
                 s["max_drawdown"] = 0
+            if "max_trades_per_day" not in s:
+                s["max_trades_per_day"] = 0
             self._slaves.append(s)
             self._add_slave_row(s)
 
