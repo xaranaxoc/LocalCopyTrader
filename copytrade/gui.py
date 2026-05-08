@@ -933,12 +933,7 @@ class App(tk.Tk):
         self.geometry("1140x760")
         if os.path.exists(ICON_DEFAULT):
             self.iconbitmap(ICON_DEFAULT)
-            try:
-                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH.png"))
-                self.iconphoto(True, img)
-                self._icon_img = img
-            except Exception:
-                pass
+            self.wm_iconbitmap(ICON_DEFAULT)
 
         self._slaves: List[Dict] = []
         self._rows: List[AccountRow] = []
@@ -951,6 +946,21 @@ class App(tk.Tk):
         self._load_config()
         self._schedule_check()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _set_logo_cyan(self, cyan: bool):
+        if not hasattr(self, '_logo_label'):
+            return
+        name = "FTH-cyan" if cyan else "FTH"
+        path = os.path.join(IMG_DIR, f"{name}.png")
+        if os.path.exists(path):
+            try:
+                img = tk.PhotoImage(file=path)
+                logo_small = img.subsample(16, 16)
+                self._logo_label.configure(image=logo_small)
+                self._logo_small = logo_small
+                self._logo_img = img
+            except Exception:
+                pass
 
     def _make_btn(self, parent, text, cmd, accent=False, danger=False):
         if accent:
@@ -972,6 +982,16 @@ class App(tk.Tk):
         hdr_left = tk.Frame(hdr, bg=BG_HEADER)
         hdr_left.pack(side="left", padx=14, pady=(10, 8))
 
+        logo_path = os.path.join(IMG_DIR, "FTH.png")
+        if os.path.exists(logo_path):
+            try:
+                self._logo_img = tk.PhotoImage(file=logo_path)
+                logo_small = self._logo_img.subsample(16, 16)
+                self._logo_label = tk.Label(hdr_left, image=logo_small, bg=BG_HEADER)
+                self._logo_label.pack(side="left", padx=(0, 8))
+                self._logo_small = logo_small
+            except Exception:
+                pass
         tk.Label(hdr_left, text="COPY TRADER", bg=BG_HEADER, fg=FG,
                  font=FONT_TITLE).pack(side="left")
         tk.Label(hdr_left, text="  MT5", bg=BG_HEADER, fg=ACCENT,
@@ -1521,12 +1541,8 @@ class App(tk.Tk):
         self.btn_stop.config(state="normal")
         if os.path.exists(ICON_CYAN):
             self.iconbitmap(ICON_CYAN)
-            try:
-                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH-cyan.png"))
-                self.iconphoto(True, img)
-                self._icon_img = img
-            except Exception:
-                pass
+            self.wm_iconbitmap(ICON_CYAN)
+        self._set_logo_cyan(True)
         self._session_stats = {"copied": 0, "failed": 0}
         self._log("\u2705 Копитрейдер запущен", "ok")
 
@@ -1538,12 +1554,8 @@ class App(tk.Tk):
         self.btn_stop.config(state="disabled")
         if os.path.exists(ICON_DEFAULT):
             self.iconbitmap(ICON_DEFAULT)
-            try:
-                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH.png"))
-                self.iconphoto(True, img)
-                self._icon_img = img
-            except Exception:
-                pass
+            self.wm_iconbitmap(ICON_DEFAULT)
+        self._set_logo_cyan(False)
         self._log("\u25A0 Копитрейдер остановлен", "warn")
         self._schedule_check()
 
