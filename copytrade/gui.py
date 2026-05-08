@@ -51,8 +51,8 @@ STATE_FILE = os.path.join(APP_DATA_DIR, "state.json")
 LOGS_DIR = os.path.join(APP_DATA_DIR, "logs")
 
 IMG_DIR = os.path.join(_BUNDLE_DIR, "img")
-ICON_DEFAULT = os.path.join(IMG_DIR, "FTH.ico")
-ICON_CYAN = os.path.join(IMG_DIR, "FTH-cyan.ico")
+ICON_DEFAULT = os.path.join(IMG_DIR, "convertico-fth.ico")
+ICON_CYAN = os.path.join(IMG_DIR, "convertico-fth-cyan.ico")
 
 # ── Цветовая палитра (neon cyan) ───────────────────────────
 BG_DEEP = "#080810"
@@ -255,6 +255,8 @@ class SlaveDialog(tk.Toplevel):
         self.resizable(False, False)
         self.configure(bg=BG)
         self.grab_set()
+        if os.path.exists(ICON_DEFAULT):
+            self.iconbitmap(ICON_DEFAULT)
         data = slave_data or {}
         self._build(data)
         self._center(parent)
@@ -974,12 +976,11 @@ class App(tk.Tk):
     def _start_tray(self):
         if not _PYSTRAY_OK:
             return
-        icon_path = ICON_DEFAULT
-        if not os.path.exists(icon_path):
+        png_path = os.path.join(IMG_DIR, "convertico-fth_256x256.png")
+        if not os.path.exists(png_path):
             return
         try:
-            pil_img = PILImage.open(icon_path)
-            pil_img = pil_img.resize((32, 32), PILImage.LANCZOS)
+            pil_img = PILImage.open(png_path)
             menu = pystray.Menu(
                 pystray.MenuItem("Показать", self._tray_show, default=True),
                 pystray.MenuItem("Выход", self._tray_exit),
@@ -1007,11 +1008,11 @@ class App(tk.Tk):
     def _update_tray_icon(self, cyan: bool):
         if not self._tray_icon or not _PYSTRAY_OK:
             return
-        icon_path = ICON_CYAN if cyan else ICON_DEFAULT
-        if os.path.exists(icon_path):
+        name = "convertico-fth-cyan_256x256" if cyan else "convertico-fth_256x256"
+        png_path = os.path.join(IMG_DIR, f"{name}.png")
+        if os.path.exists(png_path):
             try:
-                pil_img = PILImage.open(icon_path)
-                pil_img = pil_img.resize((32, 32), PILImage.LANCZOS)
+                pil_img = PILImage.open(png_path)
                 self._tray_icon.icon = pil_img
                 tip = "MT5 Copy Trader — работает" if cyan else "MT5 Copy Trader"
                 self._tray_icon.title = tip
