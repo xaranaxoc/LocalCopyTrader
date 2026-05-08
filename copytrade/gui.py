@@ -933,6 +933,12 @@ class App(tk.Tk):
         self.geometry("1140x760")
         if os.path.exists(ICON_DEFAULT):
             self.iconbitmap(ICON_DEFAULT)
+            try:
+                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH.png"))
+                self.iconphoto(True, img)
+                self._icon_img = img
+            except Exception:
+                pass
 
         self._slaves: List[Dict] = []
         self._rows: List[AccountRow] = []
@@ -1515,6 +1521,12 @@ class App(tk.Tk):
         self.btn_stop.config(state="normal")
         if os.path.exists(ICON_CYAN):
             self.iconbitmap(ICON_CYAN)
+            try:
+                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH-cyan.png"))
+                self.iconphoto(True, img)
+                self._icon_img = img
+            except Exception:
+                pass
         self._session_stats = {"copied": 0, "failed": 0}
         self._log("\u2705 Копитрейдер запущен", "ok")
 
@@ -1526,6 +1538,12 @@ class App(tk.Tk):
         self.btn_stop.config(state="disabled")
         if os.path.exists(ICON_DEFAULT):
             self.iconbitmap(ICON_DEFAULT)
+            try:
+                img = tk.PhotoImage(file=os.path.join(IMG_DIR, "FTH.png"))
+                self.iconphoto(True, img)
+                self._icon_img = img
+            except Exception:
+                pass
         self._log("\u25A0 Копитрейдер остановлен", "warn")
         self._schedule_check()
 
