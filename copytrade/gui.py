@@ -759,34 +759,12 @@ class AccountRow:
         if self._hover == hover:
             return
         self._hover = hover
-        bg = self._cur_bg()
         if hasattr(self, '_bg_frame') and self._bg_frame:
             if hover:
-                self._bg_frame.configure(bg=bg, highlightbackground=ACCENT_DIM)
+                self._bg_frame.configure(highlightbackground=ACCENT_DIM)
             else:
-                self._bg_frame.configure(bg=bg, highlightbackground=BORDER)
-        if hasattr(self, '_accent_strip') and self._accent_strip:
-            if hover:
-                self._accent_strip.configure(bg=self._dot_color())
-            else:
-                self._accent_strip.configure(bg=FG_DIM)
-        for w in self._widgets:
-            self._recolor(w, bg)
+                self._bg_frame.configure(highlightbackground=BORDER)
 
-    def _recolor(self, w, bg):
-        try:
-            if isinstance(w, tk.Button):
-                return
-            elif isinstance(w, tk.Canvas):
-                w.configure(bg=bg)
-            elif isinstance(w, tk.Label):
-                w.configure(bg=bg)
-            elif isinstance(w, tk.Frame):
-                w.configure(bg=bg)
-                for c in w.winfo_children():
-                    self._recolor(c, bg)
-        except Exception:
-            pass
 
     def update_info(self, balance: float, equity: float, login: int = 0,
                     status: str = ""):
