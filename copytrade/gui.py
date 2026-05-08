@@ -1376,10 +1376,13 @@ class App(tk.Tk):
     def _schedule_check(self):
         if self._check_timer:
             self.after_cancel(self._check_timer)
-        self._update_master_info_silent()
-        for row, slave in zip(self._rows, self._slaves):
-            self._update_row_info_silent(row, slave)
-        self._refresh_dashboard()
+        if self._trader and self._trader.is_running():
+            self._refresh_dashboard()
+        else:
+            self._update_master_info_silent()
+            for row, slave in zip(self._rows, self._slaves):
+                self._update_row_info_silent(row, slave)
+            self._refresh_dashboard()
         self._check_timer = self.after(3000, self._schedule_check)
 
     def _update_master_info_silent(self):
@@ -1547,6 +1550,14 @@ class App(tk.Tk):
     def _update_status(self, terminal_id: str, status: str,
                        balance: float = 0, equity: float = 0):
         if terminal_id == "master":
+            login = 0
+            if "#" in status:
+                try:
+                    login = int(status.split("#")[1].split()[0].split("$")[0])
+                except (ValueError, IndexError):
+                    pass
+            if login:
+                self.lbl_master_login.config(text=f"#{login}", fg=FG_DIM)
             if balance > 0:
                 self.lbl_master_bal.config(text=f"${balance:,.2f}")
             if equity > 0:
