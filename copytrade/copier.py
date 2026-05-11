@@ -116,8 +116,6 @@ def calculate_lot(symbol_info, sl_distance: float,
     contract_size = symbol_info.trade_contract_size or 0.0
 
     tick_value = max(tick_value_profit, tick_value_loss)
-    if contract_size > 0 and tick_size > 0:
-        tick_value = max(tick_value, abs(contract_size * tick_size))
 
     if tick_size <= 0 or tick_value <= 0:
         return 0.0

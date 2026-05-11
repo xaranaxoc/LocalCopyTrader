@@ -8,6 +8,7 @@ import json
 import uuid
 import subprocess
 import threading
+import ctypes
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox
@@ -739,7 +740,7 @@ class AccountRow:
                   activebackground=BG_ROW_HOVER, activeforeground=YELLOW,
                   cursor="hand2", width=2, highlightthickness=0)
         btn_test.pack(side="left", padx=1)
-        _bind_tip(btn_test, "Тест копирования")
+        _bind_tip(btn_test, "Тест: BUY 0.01 лот")
 
         btn_edit = tk.Button(bf, text="\u2699", command=self._edit,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
@@ -1767,6 +1768,24 @@ class App(tk.Tk):
         self.destroy()
 
 
+_MUTEX_NAME = "FTHTradeCopier_SingleInstance"
+
+
+def _activate_existing():
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, "FTH Trade Copier")
+    if hwnd:
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    return False
+
+
 if __name__ == "__main__":
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    already_exists = ctypes.windll.kernel32.GetLastError() == 183
+    if already_exists:
+        _activate_existing()
+        sys.exit(0)
     app = App()
     app.mainloop()
