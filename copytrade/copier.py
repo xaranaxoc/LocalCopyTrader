@@ -104,6 +104,25 @@ def save_state(state_file: str, state: Dict) -> None:
         pass
 
 
+def _get_currency_rate(from_curr: str, to_curr: str) -> float:
+    if mt5 is None or not from_curr or not to_curr:
+        return 1.0
+    if from_curr == to_curr:
+        return 1.0
+    for pair in [from_curr + to_curr, to_curr + from_curr]:
+        info = mt5.symbol_info(pair)
+        if info is not None:
+            mt5.symbol_select(pair, True)
+            tick = mt5.symbol_info_tick(pair)
+            if tick:
+                mid = (tick.bid + tick.ask) / 2
+                if mid > 0:
+                    if pair == to_curr + from_curr:
+                        return 1.0 / mid
+                    return mid
+    return 1.0
+
+
 def calculate_lot(symbol_info, sl_distance: float,
                    risk_type: str, risk_value: float,
                    balance: float) -> float:
@@ -116,6 +135,20 @@ def calculate_lot(symbol_info, sl_distance: float,
     contract_size = symbol_info.trade_contract_size or 0.0
 
     tick_value = max(tick_value_profit, tick_value_loss)
+
+    if tick_value <= 0 and contract_size > 0 and tick_size > 0:
+        raw_tick_value = contract_size * tick_size
+        profit_curr = getattr(symbol_info, 'currency_profit', '')
+        deposit_curr = ''
+        if mt5 is not None:
+            acc = mt5.account_info()
+            if acc:
+                deposit_curr = acc.currency or ''
+        if profit_curr and deposit_curr and profit_curr != deposit_curr:
+            rate = _get_currency_rate(profit_curr, deposit_curr)
+            tick_value = raw_tick_value * rate
+        else:
+            tick_value = raw_tick_value
 
     if tick_size <= 0 or tick_value <= 0:
         return 0.0
@@ -947,33 +980,7 @@ class CopyTrader:
             )
             return None
 
-        # Расчёт лота
-        if master_pos.sl != 0.0:
-            sl_distance = abs(master_pos.price_open - master_pos.sl)
-            risk_type = slave.get("risk_type", "percent")
-            risk_value = slave.get("risk_value", 1.0)
-            lot = calculate_lot(sym_info, sl_distance, risk_type, risk_value, balance)
-            self._log(
-                f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{'%' if risk_type == 'percent' else '$'} "
-                f"bal={balance:.2f} SL_dist={sl_distance:.5f} "
-                f"tick_val={sym_info.trade_tick_value} "
-                f"tick_val_loss={sym_info.trade_tick_value_loss} "
-                f"tick_val_used={max(abs(sym_info.trade_tick_value or 0), abs(sym_info.trade_tick_value_loss or 0), abs((sym_info.trade_contract_size or 0) * (sym_info.trade_tick_size or 0)))} "
-                f"tick_sz={sym_info.trade_tick_size} "
-                f"contract={sym_info.trade_contract_size} "
-                f"filling_mode_flags={sym_info.filling_mode}"
-            )
-            if lot <= 0:
-                lot = slave.get("default_lot", 0.01)
-                self._log(f"⚠️ [{sname}] Расчёт=0, default={lot}")
-        else:
-            lot = slave.get("default_lot", 0.01)
-
-        if self.config.get("min_lot_mode", False):
-            lot = sym_info.volume_min
-            self._log(f"📏 [{sname}] Мин. лот режим: lot={lot}")
-
-        # Цена
+        # Цена слейва
         tick = mt5.symbol_info_tick(slave_symbol)
         if tick is None:
             self._log(f"⚠️ [{sname}] Нет тика для {slave_symbol}")
@@ -988,6 +995,32 @@ class CopyTrader:
 
         digits = sym_info.digits
         price = normalize_price(price, digits)
+
+        # Расчёт лота
+        if master_pos.sl != 0.0:
+            sl_pct = abs(master_pos.price_open - master_pos.sl) / master_pos.price_open
+            sl_distance = price * sl_pct
+            risk_type = slave.get("risk_type", "percent")
+            risk_value = slave.get("risk_value", 1.0)
+            lot = calculate_lot(sym_info, sl_distance, risk_type, risk_value, balance)
+            self._log(
+                f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{'%' if risk_type == 'percent' else '$'} "
+                f"bal={balance:.2f} SL_dist={sl_distance:.5f} "
+                f"tick_val={sym_info.trade_tick_value} "
+                f"tick_val_loss={sym_info.trade_tick_value_loss} "
+                f"tick_sz={sym_info.trade_tick_size} "
+                f"contract={sym_info.trade_contract_size} "
+                f"filling_mode_flags={sym_info.filling_mode}"
+            )
+            if lot <= 0:
+                lot = slave.get("default_lot", 0.01)
+                self._log(f"⚠️ [{sname}] Расчёт=0, default={lot}")
+        else:
+            lot = slave.get("default_lot", 0.01)
+
+        if self.config.get("min_lot_mode", False):
+            lot = sym_info.volume_min
+            self._log(f"📏 [{sname}] Мин. лот режим: lot={lot}")
 
         # SL/TP как процент от open price
         sl = 0.0
@@ -1203,7 +1236,8 @@ class CopyTrader:
 
         # Расчёт лота
         if master_order.sl != 0.0 and same_symbol:
-            sl_distance = abs(master_order.price_open - master_order.sl)
+            sl_pct = abs(master_order.price_open - master_order.sl) / master_order.price_open
+            sl_distance = master_order.price_open * sl_pct
             lot = calculate_lot(
                 sym_info, sl_distance,
                 slave.get("risk_type", "percent"),
