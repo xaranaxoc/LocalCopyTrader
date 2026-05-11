@@ -130,13 +130,10 @@ def calculate_lot(symbol_info, sl_distance: float,
         return 0.0
 
     tick_size = symbol_info.trade_tick_size
-    tick_value_profit = abs(symbol_info.trade_tick_value or 0.0)
-    tick_value_loss = abs(symbol_info.trade_tick_value_loss or 0.0)
     contract_size = symbol_info.trade_contract_size or 0.0
 
-    tick_value = max(tick_value_profit, tick_value_loss)
-
-    if tick_value <= 0 and contract_size > 0 and tick_size > 0:
+    tick_value = 0.0
+    if contract_size > 0 and tick_size > 0:
         raw_tick_value = contract_size * tick_size
         profit_curr = getattr(symbol_info, 'currency_profit', '')
         deposit_curr = ''
@@ -149,6 +146,11 @@ def calculate_lot(symbol_info, sl_distance: float,
             tick_value = raw_tick_value * rate
         else:
             tick_value = raw_tick_value
+
+    if tick_value <= 0:
+        tick_value_profit = abs(symbol_info.trade_tick_value or 0.0)
+        tick_value_loss = abs(symbol_info.trade_tick_value_loss or 0.0)
+        tick_value = max(tick_value_profit, tick_value_loss)
 
     if tick_size <= 0 or tick_value <= 0:
         return 0.0
