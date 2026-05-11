@@ -117,27 +117,27 @@ def _get_currency_rate(from_curr: str, to_curr: str) -> float:
             tick = mt5.symbol_info_tick(pair)
             if tick and tick.bid > 0:
                 mid = (tick.bid + tick.ask) / 2
-                if mid > 0:
-                    if pair == to_curr + from_curr:
-                        return 1.0 / mid
-                    return mid
+                if pair == to_curr + from_curr:
+                    return 1.0 / mid
+                return mid
     all_symbols = mt5.symbols_get()
     if all_symbols:
         from_upper = from_curr.upper()
         to_upper = to_curr.upper()
-        for pair in candidates:
-            pair_upper = pair.upper()
-            for s in all_symbols:
-                name_upper = s.name.upper()
-                if name_upper == pair_upper:
-                    mt5.symbol_select(s.name, True)
-                    tick = mt5.symbol_info_tick(s.name)
-                    if tick and tick.bid > 0:
-                        mid = (tick.bid + tick.ask) / 2
-                        if mid > 0:
-                            if s.name.upper() == (to_curr + from_curr).upper():
-                                return 1.0 / mid
-                            return mid
+        for s in all_symbols:
+            name_upper = s.name.upper()
+            if name_upper.startswith(from_upper) and to_upper in name_upper[len(from_upper):]:
+                mt5.symbol_select(s.name, True)
+                tick = mt5.symbol_info_tick(s.name)
+                if tick and tick.bid > 0:
+                    mid = (tick.bid + tick.ask) / 2
+                    return mid
+            if name_upper.startswith(to_upper) and from_upper in name_upper[len(to_upper):]:
+                mt5.symbol_select(s.name, True)
+                tick = mt5.symbol_info_tick(s.name)
+                if tick and tick.bid > 0:
+                    mid = (tick.bid + tick.ask) / 2
+                    return 1.0 / mid
     if from_curr != "USD" and to_curr != "USD":
         r1 = _get_currency_rate(from_curr, "USD")
         r2 = _get_currency_rate("USD", to_curr)
@@ -1031,6 +1031,7 @@ class CopyTrader:
             risk_value = slave.get("risk_value", 1.0)
             lot = calculate_lot(sym_info, sl_distance, risk_type, risk_value, balance)
             profit_curr = getattr(sym_info, 'currency_profit', '') or ''
+            raw_tv = (sym_info.trade_contract_size or 0) * (sym_info.trade_tick_size or 0)
             self._log(
                 f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{'%' if risk_type == 'percent' else '$'} "
                 f"bal={balance:.2f} SL_dist={sl_distance:.5f} "
@@ -1039,6 +1040,7 @@ class CopyTrader:
                 f"tick_sz={sym_info.trade_tick_size} "
                 f"contract={sym_info.trade_contract_size} "
                 f"profit_curr={profit_curr} "
+                f"raw_tv={raw_tv} "
                 f"filling_mode_flags={sym_info.filling_mode}"
             )
             if lot <= 0:
