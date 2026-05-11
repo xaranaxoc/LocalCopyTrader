@@ -109,17 +109,40 @@ def _get_currency_rate(from_curr: str, to_curr: str) -> float:
         return 1.0
     if from_curr == to_curr:
         return 1.0
-    for pair in [from_curr + to_curr, to_curr + from_curr]:
+    candidates = [from_curr + to_curr, to_curr + from_curr]
+    for pair in candidates:
         info = mt5.symbol_info(pair)
         if info is not None:
             mt5.symbol_select(pair, True)
             tick = mt5.symbol_info_tick(pair)
-            if tick:
+            if tick and tick.bid > 0:
                 mid = (tick.bid + tick.ask) / 2
                 if mid > 0:
                     if pair == to_curr + from_curr:
                         return 1.0 / mid
                     return mid
+    all_symbols = mt5.symbols_get()
+    if all_symbols:
+        from_upper = from_curr.upper()
+        to_upper = to_curr.upper()
+        for pair in candidates:
+            pair_upper = pair.upper()
+            for s in all_symbols:
+                name_upper = s.name.upper()
+                if name_upper == pair_upper:
+                    mt5.symbol_select(s.name, True)
+                    tick = mt5.symbol_info_tick(s.name)
+                    if tick and tick.bid > 0:
+                        mid = (tick.bid + tick.ask) / 2
+                        if mid > 0:
+                            if s.name.upper() == (to_curr + from_curr).upper():
+                                return 1.0 / mid
+                            return mid
+    if from_curr != "USD" and to_curr != "USD":
+        r1 = _get_currency_rate(from_curr, "USD")
+        r2 = _get_currency_rate("USD", to_curr)
+        if r1 > 0 and r2 > 0:
+            return r1 * r2
     return 1.0
 
 
@@ -133,14 +156,16 @@ def calculate_lot(symbol_info, sl_distance: float,
     contract_size = symbol_info.trade_contract_size or 0.0
 
     tick_value = 0.0
+    rate = 1.0
+    profit_curr = getattr(symbol_info, 'currency_profit', '') or ''
+    deposit_curr = ''
+    if mt5 is not None:
+        acc = mt5.account_info()
+        if acc:
+            deposit_curr = acc.currency or ''
+
     if contract_size > 0 and tick_size > 0:
         raw_tick_value = contract_size * tick_size
-        profit_curr = getattr(symbol_info, 'currency_profit', '')
-        deposit_curr = ''
-        if mt5 is not None:
-            acc = mt5.account_info()
-            if acc:
-                deposit_curr = acc.currency or ''
         if profit_curr and deposit_curr and profit_curr != deposit_curr:
             rate = _get_currency_rate(profit_curr, deposit_curr)
             tick_value = raw_tick_value * rate
@@ -1005,6 +1030,7 @@ class CopyTrader:
             risk_type = slave.get("risk_type", "percent")
             risk_value = slave.get("risk_value", 1.0)
             lot = calculate_lot(sym_info, sl_distance, risk_type, risk_value, balance)
+            profit_curr = getattr(sym_info, 'currency_profit', '') or ''
             self._log(
                 f"📊 [{sname}] lot={lot:.2f} risk={risk_value}{'%' if risk_type == 'percent' else '$'} "
                 f"bal={balance:.2f} SL_dist={sl_distance:.5f} "
@@ -1012,6 +1038,7 @@ class CopyTrader:
                 f"tick_val_loss={sym_info.trade_tick_value_loss} "
                 f"tick_sz={sym_info.trade_tick_size} "
                 f"contract={sym_info.trade_contract_size} "
+                f"profit_curr={profit_curr} "
                 f"filling_mode_flags={sym_info.filling_mode}"
             )
             if lot <= 0:
