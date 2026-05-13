@@ -779,6 +779,15 @@ class CopyTrader:
                 today_str = date.today().isoformat()
                 dl_state: Dict = self.state.setdefault("daily_loss_balance", {})
                 if dl_state.get("_date") != today_str:
+                    if dl_state.get("_date"):
+                        self._log(
+                            f"🔄 [{sname}] Новый день — сброс дневного убытка "
+                            f"(было: {dl_state.get(sid, '?')})"
+                        )
+                        if self._daily_loss_paused.get(sid):
+                            self._log(
+                                f"✅ [{sname}] Лимит убытка снят — копирование возобновлено"
+                            )
                     dl_state.clear()
                     dl_state["_date"] = today_str
                     self._daily_loss_paused.pop(sid, None)
