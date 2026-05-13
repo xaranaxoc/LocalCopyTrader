@@ -90,6 +90,8 @@ def load_state(state_file: str) -> Dict:
                 data["orders"] = {}
             if "daily_trades" not in data:
                 data["daily_trades"] = {}
+            if "daily_loss_balance" not in data:
+                data["daily_loss_balance"] = {}
             return data
         except Exception:
             pass
@@ -311,7 +313,7 @@ class CopyTrader:
         config: Dict,
         state_file: str,
         log_callback: Callable[[str], None],
-        status_callback: Callable[[str, str, float, float], None],
+        status_callback: Callable[[str, str, float, float, float, float], None],
         trade_callback: Optional[Callable[[Dict], None]] = None,
         config_file: str = "",
     ):
@@ -327,6 +329,7 @@ class CopyTrader:
         self._lock = threading.Lock()
         self._drawdown_paused: Dict[str, bool] = {}
         self._trades_paused: Dict[str, bool] = {}
+        self._daily_loss_paused: Dict[str, bool] = {}
 
         self.state = load_state(state_file)
 
@@ -583,8 +586,9 @@ class CopyTrader:
         self.log_cb(f"[{ts}] {msg}")
 
     def _status(self, terminal_id: str, status: str,
-                 balance: float = 0, equity: float = 0):
-        self.status_cb(terminal_id, status, balance, equity)
+                 balance: float = 0, equity: float = 0,
+                 daily_loss: float = 0, daily_loss_limit: float = 0):
+        self.status_cb(terminal_id, status, balance, equity, daily_loss, daily_loss_limit)
 
     def _trade_event(self, info: Dict):
         if self.trade_cb:
@@ -767,14 +771,42 @@ class CopyTrader:
                         )
                         self._trades_paused[sid] = False
 
-            if dd_paused or trades_paused:
-                if not dd_paused:
+            # ── Лимит убытка в день ────────────────────────────────
+            daily_loss_limit = slave.get("daily_loss_limit", 0)
+            loss_paused = False
+            daily_loss = 0
+            if daily_loss_limit > 0 and balance > 0:
+                today_str = date.today().isoformat()
+                dl_state: Dict = self.state.setdefault("daily_loss_balance", {})
+                if dl_state.get("_date") != today_str:
+                    dl_state.clear()
+                    dl_state["_date"] = today_str
+                    self._daily_loss_paused.pop(sid, None)
+                if sid not in dl_state:
+                    dl_state[sid] = balance
+                start_bal = dl_state.get(sid, balance)
+                daily_loss = max(0, start_bal - equity)
+                if daily_loss >= daily_loss_limit:
+                    loss_paused = True
+                    if not self._daily_loss_paused.get(sid):
+                        self._log(
+                            f"🛑 [{sname}] Дневной убыток ${daily_loss:.2f} >= "
+                            f"${daily_loss_limit:.2f} — закрываем все позиции"
+                        )
+                        self._close_positions_inline(sname)
+                        self._daily_loss_paused[sid] = True
+
+            if dd_paused or trades_paused or loss_paused:
+                if not dd_paused and not loss_paused:
                     self._status(sname, f"🟢 #{acc.login} ${balance:.2f}",
-                                 balance, equity)
+                                 balance, equity, daily_loss, daily_loss_limit)
+                elif loss_paused:
+                    self._status(sname, f"🔴 #{acc.login} убыток ${daily_loss:.2f}",
+                                 balance, equity, daily_loss, daily_loss_limit)
                 return
 
             self._status(sname, f"🟢 #{acc.login} ${balance:.2f}",
-                         balance, equity)
+                         balance, equity, daily_loss, daily_loss_limit)
 
             self._sync_positions(slave, sid, sname, symbol_map,
                                  master_positions, balance)
@@ -782,6 +814,39 @@ class CopyTrader:
                               master_orders, master_positions, balance)
         finally:
             mt5.shutdown()
+
+    # ── Закрытие всех позиций (подключение уже установлено) ──
+
+    def _close_positions_inline(self, sname: str):
+        positions = mt5.positions_get()
+        if not positions:
+            return
+        closed = 0
+        for pos in positions:
+            tick = mt5.symbol_info_tick(pos.symbol)
+            if tick is None:
+                continue
+            sym_info = mt5.symbol_info(pos.symbol)
+            filling = get_filling_mode(sym_info) if sym_info else mt5.ORDER_FILLING_IOC
+            close_type = opposite_order_type(pos.type)
+            price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+            if sym_info:
+                price = normalize_price(price, sym_info.digits)
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": pos.symbol,
+                "volume": pos.volume,
+                "type": close_type,
+                "position": pos.ticket,
+                "price": price,
+                "comment": "CT_DAILY_LIMIT",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+            result = try_send_order(request, self._log)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                closed += 1
+        self._log(f"🔴 [{sname}] Закрыто {closed}/{len(positions)} позиций (лимит убытка)")
 
     # ── Синхронизация позиций ────────────────────────────────
 

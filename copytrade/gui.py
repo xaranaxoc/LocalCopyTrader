@@ -10,7 +10,7 @@ import subprocess
 import threading
 import ctypes
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from tkinter import ttk, filedialog, messagebox
 from typing import Dict, List, Optional
 
@@ -50,6 +50,8 @@ APP_DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), 
 CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
 STATE_FILE = os.path.join(APP_DATA_DIR, "state.json")
 LOGS_DIR = os.path.join(APP_DATA_DIR, "logs")
+TRADES_FILE = os.path.join(APP_DATA_DIR, "trades.json")
+TRADES_KEEP_DAYS = 7
 
 IMG_DIR = os.path.join(_BUNDLE_DIR, "img")
 ICON_DEFAULT = os.path.join(IMG_DIR, "convertico-fth.ico")
@@ -93,6 +95,36 @@ FONT = ("Segoe UI", 9)
 FONT_BOLD = ("Segoe UI", 9, "bold")
 FONT_SM = ("Segoe UI", 8)
 FONT_XS = ("Segoe UI", 7)
+
+# ── Persistence: trades ─────────────────────────────────────
+
+def _save_trade(trade: Dict):
+    try:
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+        trades = []
+        if os.path.exists(TRADES_FILE):
+            with open(TRADES_FILE, "r", encoding="utf-8") as f:
+                trades = json.load(f)
+        trade["date"] = datetime.now().strftime("%Y-%m-%d")
+        trades.append(trade)
+        cutoff = (datetime.now() - timedelta(days=TRADES_KEEP_DAYS)).strftime("%Y-%m-%d")
+        trades = [t for t in trades if t.get("date", "") >= cutoff]
+        with open(TRADES_FILE, "w", encoding="utf-8") as f:
+            json.dump(trades, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def _load_trades() -> List[Dict]:
+    if not os.path.exists(TRADES_FILE):
+        return []
+    try:
+        with open(TRADES_FILE, "r", encoding="utf-8") as f:
+            trades = json.load(f)
+        cutoff = (datetime.now() - timedelta(days=TRADES_KEEP_DAYS)).strftime("%Y-%m-%d")
+        return [t for t in trades if t.get("date", "") >= cutoff]
+    except Exception:
+        return []
 
 # ── Tooltip (info mode) ────────────────────────────────────
 
@@ -161,7 +193,8 @@ COL_SPEC = [
     (7, "СИМВОЛЫ", 100, 1, "w"),
     (8, "РИСК", 60, 0, "e"),
     (9, "СДЕЛ/Д", 54, 0, "center"),
-    (10, "", 110, 0, "e"),
+    (10, "УБЫТ/Д", 110, 0, "center"),
+    (11, "", 110, 0, "e"),
 ]
 
 
@@ -380,6 +413,12 @@ class SlaveDialog(tk.Toplevel):
         tk.Label(frm_risk, text="0 = выкл", bg=BG, fg=FG_DIM, font=FONT_XS).grid(
             row=7, column=1, sticky="w", padx=(6, 0))
 
+        self._lbl(frm_risk, "Убыт/Д $").grid(row=8, column=0, sticky="w", pady=2)
+        self.var_daily_loss = tk.StringVar(value=str(data.get("daily_loss_limit", 0)))
+        self._ent(frm_risk, self.var_daily_loss, 8).grid(row=8, column=1, sticky="w", padx=(6, 0), pady=2)
+        tk.Label(frm_risk, text="0 = выкл", bg=BG, fg=FG_DIM, font=FONT_XS).grid(
+            row=9, column=1, sticky="w", padx=(6, 0))
+
         tk.Frame(self, bg=DIVIDER, height=1).pack(fill="x", padx=12, pady=6)
 
         btn_frame = tk.Frame(self, bg=BG)
@@ -596,12 +635,17 @@ class SlaveDialog(tk.Toplevel):
             max_trades_per_day = int(self.var_max_trades.get())
         except ValueError:
             max_trades_per_day = 0
+        try:
+            daily_loss_limit = float(self.var_daily_loss.get())
+        except ValueError:
+            daily_loss_limit = 0
 
         self.result = {
             "name": name, "path": path, "symbol_map": symbol_map,
             "risk_type": risk_type, "risk_value": risk_value,
             "default_lot": default_lot, "max_drawdown": max_drawdown,
             "max_trades_per_day": max_trades_per_day,
+            "daily_loss_limit": daily_loss_limit,
         }
         self.destroy()
 
@@ -646,7 +690,7 @@ class AccountRow:
 
         self._bg_frame = tk.Frame(self._parent, bg=bg, highlightbackground=BORDER,
                                    highlightthickness=1 if not self._hover else 1)
-        self._bg_frame.grid(row=r, column=0, columnspan=11, sticky="nsew", pady=(1, 1))
+        self._bg_frame.grid(row=r, column=0, columnspan=12, sticky="nsew", pady=(1, 1))
         self._bg_frame.lower()
 
         self._accent_strip = tk.Frame(self._bg_frame, bg=FG_DIM, width=3)
@@ -718,8 +762,21 @@ class AccountRow:
         self.lbl_trades_day.grid(row=r, column=9, padx=4, pady=6, sticky="ew")
         self._widgets.append(self.lbl_trades_day)
 
+        dll = d.get("daily_loss_limit", 0)
+        bar_w = 100
+        self._loss_canvas = tk.Canvas(self._parent, width=bar_w, height=16,
+                                       bg=BG_INPUT, highlightthickness=0, bd=0)
+        self._loss_canvas.grid(row=r, column=10, padx=4, pady=6, sticky="ew")
+        self._loss_fill = self._loss_canvas.create_rectangle(0, 0, 0, 16, fill="", outline="")
+        self._loss_text = self._loss_canvas.create_text(bar_w // 2, 8, text="\u2014",
+                                                         fill=FG_DIM, font=FONT_XS)
+        if dll > 0:
+            self._loss_canvas.itemconfigure(self._loss_text, text=f"${dll:.0f}",
+                                             fill=FG_DIM)
+        self._widgets.append(self._loss_canvas)
+
         bf = tk.Frame(self._parent, bg=bg)
-        bf.grid(row=r, column=10, padx=(2, 6), pady=6, sticky="e")
+        bf.grid(row=r, column=11, padx=(2, 6), pady=6, sticky="e")
 
         btn_open = tk.Button(bf, text="\U0001F4C8", command=self._open_terminal,
                   bg=bg, fg=FG_DIM, relief="flat", font=FONT_SM,
@@ -824,6 +881,24 @@ class AccountRow:
             pnl_color = GREEN if pnl >= 0 else RED
             pnl_sign = "+" if pnl >= 0 else ""
             self.lbl_pnl.config(text=f"{pnl_sign}${pnl:,.2f}", fg=pnl_color, bg=bg)
+
+    def update_daily_loss(self, daily_loss: float, daily_loss_limit: float):
+        if daily_loss_limit <= 0:
+            self._loss_canvas.coords(self._loss_fill, 0, 0, 0, 16)
+            self._loss_canvas.itemconfigure(self._loss_fill, fill="")
+            self._loss_canvas.itemconfigure(self._loss_text, text="\u2014", fill=FG_DIM)
+            return
+        bar_w = 100
+        pct = min(daily_loss / daily_loss_limit, 1.0) if daily_loss_limit > 0 else 0
+        fill_w = int(bar_w * pct)
+        exceeded = daily_loss >= daily_loss_limit
+        fill_color = RED if exceeded else ACCENT
+        text_color = "white" if pct > 0.5 else FG
+        self._loss_canvas.coords(self._loss_fill, 0, 0, fill_w, 16)
+        self._loss_canvas.itemconfigure(self._loss_fill, fill=fill_color)
+        self._loss_canvas.itemconfigure(self._loss_text,
+                                          text=f"${daily_loss:.0f}/${daily_loss_limit:.0f}",
+                                          fill=text_color)
 
     def _toggle(self):
         new_val = not self.var_enabled.get()
@@ -987,7 +1062,7 @@ class App(tk.Tk):
             pil_img = PILImage.open(png_path)
             menu = pystray.Menu(
                 pystray.MenuItem("Показать", self._tray_show, default=True),
-                pystray.MenuItem("Выход", self._tray_exit),
+                pystray.MenuItem("Стоп + Выход", self._tray_exit),
             )
             self._tray_icon = pystray.Icon("FTHTradeCopier", pil_img, "FTH Trade Copier", menu)
             self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
@@ -1004,10 +1079,12 @@ class App(tk.Tk):
         self.focus_force()
 
     def _tray_exit(self, icon=None, item=None):
+        if self._trader and self._trader.is_running():
+            self.after(0, self._stop)
         if self._tray_icon:
             self._tray_icon.stop()
             self._tray_icon = None
-        self.after(0, self.destroy)
+        self.after(0, self._real_quit)
 
     def _update_tray_icon(self, cyan: bool):
         if not self._tray_icon or not _PYSTRAY_OK:
@@ -1185,7 +1262,7 @@ class App(tk.Tk):
             lbl_h.grid(row=0, column=idx, padx=2, pady=(2, 0), sticky="ew")
 
         self.tbl_btns = tk.Frame(self._table_frame, bg=BG_DEEP)
-        self.tbl_btns.grid(row=0, column=10, sticky="ew", padx=2, pady=(2, 0))
+        self.tbl_btns.grid(row=0, column=11, sticky="ew", padx=2, pady=(2, 0))
 
         btn_add = self._make_btn(self.tbl_btns, "+ Аккаунт", self._add_slave,
                        accent=True)
@@ -1214,6 +1291,15 @@ class App(tk.Tk):
         self.notebook.add(trades_tab, text="  Сделки  ")
         self.trades_table = TradesTable(trades_tab)
         self.trades_table.pack(fill="both", expand=True, padx=1, pady=1)
+
+        for t in _load_trades():
+            tag = "ok" if t.get("success") else "err"
+            self.trades_table.add_trade(
+                time_str=t.get("time", ""), slave=t.get("slave", ""),
+                symbol=t.get("symbol", ""), direction=t.get("direction", ""),
+                lot=t.get("lot", 0.0), master_ticket=t.get("master_ticket", ""),
+                slave_ticket=t.get("slave_ticket", ""), status=t.get("status", ""),
+                tag=tag)
 
         log_tab = tk.Frame(self.notebook, bg=BG)
         self.notebook.add(log_tab, text="  Лог  ")
@@ -1316,6 +1402,8 @@ class App(tk.Tk):
             data["enabled"] = True
             if "max_trades_per_day" not in data:
                 data["max_trades_per_day"] = 0
+            if "daily_loss_limit" not in data:
+                data["daily_loss_limit"] = 0
             self._slaves.append(data)
             self._add_slave_row(data)
             self._save_config()
@@ -1626,8 +1714,10 @@ class App(tk.Tk):
         self.after(0, self._log, msg)
 
     def _on_status(self, terminal_id: str, status: str,
-                   balance: float = 0, equity: float = 0):
-        self.after(0, self._update_status, terminal_id, status, balance, equity)
+                   balance: float = 0, equity: float = 0,
+                   daily_loss: float = 0, daily_loss_limit: float = 0):
+        self.after(0, self._update_status, terminal_id, status, balance, equity,
+                   daily_loss, daily_loss_limit)
 
     def _on_trade(self, trade_info: Dict):
         self.after(0, self._add_trade_row, trade_info)
@@ -1646,10 +1736,12 @@ class App(tk.Tk):
             tag=tag)
         self.lbl_stats.config(
             text=f"\u2705 {self._session_stats['copied']}  \u274C {self._session_stats['failed']}")
+        _save_trade(info)
         self.notebook.select(0)
 
     def _update_status(self, terminal_id: str, status: str,
-                       balance: float = 0, equity: float = 0):
+                       balance: float = 0, equity: float = 0,
+                       daily_loss: float = 0, daily_loss_limit: float = 0):
         if terminal_id == "master":
             login = 0
             if "#" in status:
@@ -1674,6 +1766,8 @@ class App(tk.Tk):
                     row.update_status_only(status, balance, equity)
                 else:
                     row.update_status_only(status)
+                if daily_loss_limit > 0:
+                    row.update_daily_loss(daily_loss, daily_loss_limit)
                 break
 
     # ── Лог ─────────────────────────────────────────────────
@@ -1720,6 +1814,7 @@ class App(tk.Tk):
                     "default_lot": s.get("default_lot", 0.01),
                     "max_drawdown": s.get("max_drawdown", 0),
                     "max_trades_per_day": s.get("max_trades_per_day", 0),
+                    "daily_loss_limit": s.get("daily_loss_limit", 0),
                 }
                 for s in self._slaves
             ],
@@ -1752,14 +1847,20 @@ class App(tk.Tk):
                 s["max_drawdown"] = 0
             if "max_trades_per_day" not in s:
                 s["max_trades_per_day"] = 0
+            if "daily_loss_limit" not in s:
+                s["daily_loss_limit"] = 0
             self._slaves.append(s)
             self._add_slave_row(s)
 
     def _on_close(self):
         if self._trader and self._trader.is_running():
-            if not messagebox.askyesno("Выход",
-                    "Копитрейдер запущен. Остановить и выйти?", parent=self):
-                return
+            self.withdraw()
+            self._log("📋 Сворачивание в tray — копитрейдер продолжает работу", "info")
+            return
+        self._real_quit()
+
+    def _real_quit(self):
+        if self._trader and self._trader.is_running():
             self._stop()
         if self._tray_icon:
             self._tray_icon.stop()
